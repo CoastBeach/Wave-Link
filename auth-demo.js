@@ -205,40 +205,40 @@
 
   var currentPhrase = null;
 
-  var SAFE_SENTENCES = [
-    'Apples grow on trees.',
-    'Corn on the cob is tasty.',
-    'Roblox is fun.',
-    'Cats are great pets.',
-    'The sky is blue today.',
-    'Pizza is delicious.',
-    'Dogs like to play fetch.',
-    'The ocean is very deep.',
-    'Bananas are yellow.',
-    'I enjoy building games.',
-    'Rain makes plants grow.',
-    'Summer days are long.',
-    'Birds can fly high.',
-    'Ice cream is a fun treat.',
-    'Books tell great stories.',
-    'Mountains are tall.',
-    'Bees make honey.',
-    'Stars shine at night.',
-    'Turtles move slowly.',
-    'Friends make life better.',
-    'Music makes people happy.',
-    'Fish live underwater.',
-    'Autumn leaves turn orange.',
-    'Robots can be helpful.'
+  var SAFE_CLAUSES = [
+    'I like apples',
+    'I have fun',
+    'I enjoy sunny days',
+    'I love pizza',
+    'I like cats',
+    'I enjoy swimming',
+    'I like the color blue',
+    'I had a great day',
+    'I enjoy music',
+    'I like reading books',
+    'I like dogs',
+    'I enjoy the beach',
+    'I like ice cream',
+    'I enjoy playing games',
+    'I like autumn leaves',
+    'I enjoy rainy days',
+    'I like bananas',
+    'I enjoy long walks',
+    'I like birds',
+    'I enjoy baking',
+    'I like the ocean',
+    'I enjoy sunsets',
+    'I like turtles',
+    'I enjoy quiet mornings'
   ];
 
   function generateSafePhrase(){
-    var first = SAFE_SENTENCES[Math.floor(Math.random() * SAFE_SENTENCES.length)];
+    var first = SAFE_CLAUSES[Math.floor(Math.random() * SAFE_CLAUSES.length)];
     var second;
     do {
-      second = SAFE_SENTENCES[Math.floor(Math.random() * SAFE_SENTENCES.length)];
+      second = SAFE_CLAUSES[Math.floor(Math.random() * SAFE_CLAUSES.length)];
     } while (second === first);
-    return first + ' ' + second;
+    return first + ' and ' + second + '!';
   }
   var pendingProfile = null;
 
@@ -327,4 +327,32 @@
   if (bioConfirmYesBtn){
     bioConfirmYesBtn.addEventListener('click', async function(){
       if (!pendingProfile) return;
-    
+      bioConfirmYesBtn.disabled = true;
+      bioConfirmYesBtn.textContent = 'Logging you in…';
+
+      try{
+        var res = await fetch(WORKER_URL + '/api/bio-verify/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pendingProfile)
+        });
+        var data = await res.json();
+
+        var session = {
+          robloxUserId: pendingProfile.robloxUserId,
+          robloxUsername: pendingProfile.username,
+          robloxDisplayName: pendingProfile.displayName,
+          avatarUrl: pendingProfile.avatarUrl,
+          sessionToken: data.sessionToken,
+          connectedAt: new Date().toISOString()
+        };
+        try{ localStorage.setItem('wavelink_demo_session', JSON.stringify(session)); } catch(e){}
+
+        window.location.href = 'dashboard.html';
+      } catch(e){
+        bioConfirmYesBtn.disabled = false;
+        bioConfirmYesBtn.textContent = "Yes, that's me";
+      }
+    });
+  }
+})();
