@@ -213,7 +213,7 @@
   }
 
   function openBioOverlay(){
-    currentPhrase = 'wavelink-' + Math.random().toString(36).slice(2, 8);
+    currentPhrase = 'wavelink verify code ' + Math.floor(100000 + Math.random() * 900000);
     bioUsernameInput.value = '';
     showBioStep('username');
     bioOverlay.classList.add('open');
