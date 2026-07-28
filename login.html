@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Log in — WaveLink</title>
+<meta name="description" content="Log in to WaveLink and verify your Roblox account." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+
+<style>
+.auth-shell{ position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; }
+.auth-top{ padding: 26px 0; }
+.auth-main{ flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
+
+.auth-card{
+  width: 100%;
+  max-width: 440px;
+  background: linear-gradient(180deg, rgba(20,27,42,0.85), rgba(11,15,24,0.85));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 40px 80px -30px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.03) inset;
+  padding: 36px 32px 32px;
+  text-align: center;
+}
+
+.auth-card h1{ font-family: var(--font-display); font-size: 22px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 8px; }
+.auth-card > p.sub{ font-size: 14px; color: var(--text-dim); line-height: 1.6; margin: 0 0 28px; }
+
+/* Returning-user state */
+.returning-avatar{
+  width: 64px; height: 64px;
+  border-radius: 16px;
+  margin: 0 auto 16px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border-soft);
+}
+.returning-avatar img{ width: 100%; height: 100%; object-fit: cover; }
+
+.returning-actions{ display: flex; flex-direction: column; gap: 10px; margin-top: 22px; }
+
+.roblox-btn{
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 14px 18px; border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+  font-family: var(--font-body); font-weight: 600; font-size: 15px;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.roblox-btn:hover{ border-color: rgba(255,255,255,0.22); background: rgba(255,255,255,0.06); transform: translateY(-1px); }
+.roblox-btn:disabled{ opacity: 0.7; cursor: default; transform: none; }
+.roblox-btn .glyph{ width: 20px; height: 20px; border-radius: 5px; background: linear-gradient(155deg, #f2f2f2, #b9b9b9); display: grid; place-items: center; flex-shrink: 0; }
+.roblox-btn .glyph svg{ width: 12px; height: 12px; }
+
+.auth-note{ font-size: 12.5px; color: var(--text-faint); line-height: 1.6; margin-top: 22px; }
+.auth-note a{ color: var(--accent-soft); }
+
+.auth-back{ display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--text-dim); margin-top: 24px; }
+.auth-back svg{ width: 14px; height: 14px; }
+.auth-back:hover{ color: var(--text); }
+
+/* ---- Verification overlay ---- */
+.verify-overlay{
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  background: rgba(3, 5, 9, 0.72);
+  backdrop-filter: blur(4px);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.3s var(--ease);
+}
+.verify-overlay.open{ opacity: 1; pointer-events: auto; }
+
+.verify-card{
+  width: 100%; max-width: 400px;
+  background: #101725;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 50px 100px -30px rgba(0,0,0,0.75);
+  padding: 30px 28px 26px;
+  text-align: center;
+  transform: translateY(14px) scale(0.98);
+  transition: transform 0.3s var(--ease);
+}
+.verify-overlay.open .verify-card{ transform: translateY(0) scale(1); }
+
+.verify-card h3{ font-family: var(--font-display); font-size: 17px; font-weight: 700; margin: 0 0 8px; color: var(--text); }
+.verify-card p.desc{ font-size: 13.5px; color: var(--text-dim); line-height: 1.6; margin: 0 0 20px; }
+
+.verify-code{
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--accent-soft);
+  background: rgba(63,214,255,0.08);
+  border: 1px solid rgba(63,214,255,0.24);
+  border-radius: 12px;
+  padding: 14px 10px;
+  margin-bottom: 18px;
+  cursor: pointer;
+  user-select: all;
+}
+.verify-code .copy-hint{ display: block; font-family: var(--font-body); font-size: 10.5px; color: var(--text-faint); letter-spacing: normal; font-weight: 500; margin-top: 4px; }
+
+.verify-steps{ text-align: left; margin: 0 0 22px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.verify-steps li{ display: flex; gap: 10px; font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+.verify-steps li span.n{
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(63,214,255,0.14); color: var(--accent-soft);
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  display: grid; place-items: center;
+}
+
+.verify-status{
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-faint);
+  margin-bottom: 18px; min-height: 18px;
+}
+.verify-status .spinner{
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.15); border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin{ to{ transform: rotate(360deg); } }
+.verify-status.success{ color: var(--success); }
+.verify-status.success .spinner{ display: none; }
+.verify-status.error{ color: #ff8a8a; }
+.verify-status.error .spinner{ display: none; }
+
+.verify-actions{ display: flex; gap: 10px; }
+.verify-actions .btn{ flex: 1; }
+
+[hidden]{ display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="bg-layer" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-glow-primary"></div>
+  <div class="bg-glow-secondary"></div>
+  <div id="particles"></div>
+</div>
+
+<div class="auth-shell">
+  <header class="auth-top">
+    <div class="container">
+      <a href="index.html" class="brand">WaveLink</a>
+    </div>
+  </header>
+
+  <main class="auth-main">
+
+    <!-- Returning-user card: shown by auth-demo.js if a saved account is found -->
+    <div class="auth-card reveal in" id="returningCard" hidden>
+      <div class="returning-avatar" id="returningAvatar"></div>
+      <h1 id="returningHeading">Welcome back</h1>
+      <p class="sub">You've signed in before on this browser.</p>
+
+      <div class="returning-actions">
+        <button class="btn btn-primary" id="continueAsBtn" type="button" style="width:100%;">Continue</button>
+        <button class="roblox-btn" id="useDifferentBtn" type="button">Use a different account</button>
+      </div>
+    </div>
+
+    <!-- Default card: fresh verification -->
+    <div class="auth-card reveal in" id="freshCard" hidden>
+      <h1>Log in to WaveLink</h1>
+      <p class="sub">Verify your Roblox account to access your dashboard. No password is ever shared with WaveLink.</p>
+
+      <button class="roblox-btn" id="robloxLoginBtn" type="button">
+        <span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="3" stroke="#0b0e14" stroke-width="2"/></svg></span>
+        <span class="btn-label">Verify with Roblox</span>
+      </button>
+
+      <p class="auth-note">By continuing, you agree to WaveLink's <a href="terms.html" target="_blank" rel="noopener">Terms of Service</a> and <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>. WaveLink is not affiliated with Roblox Corporation.</p>
+    </div>
+
+  </main>
+
+  <div style="text-align:center; padding-bottom: 32px;">
+    <a href="index.html" class="auth-back">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Back to home
+    </a>
+  </div>
+
+  <footer style="text-align:center; padding: 18px 20px 28px; font-size: 12.5px; color: var(--text-faint);">
+    <a href="terms.html" style="color: var(--text-faint); margin: 0 10px;">Terms of Service</a>
+    ·
+    <a href="privacy.html" style="color: var(--text-faint); margin: 0 10px;">Privacy Policy</a>
+  </footer>
+</div>
+
+<div class="verify-overlay" id="verifyOverlay" role="dialog" aria-modal="true" aria-labelledby="verifyTitle">
+  <div class="verify-card">
+    <h3 id="verifyTitle">Verify your Roblox account</h3>
+    <p class="desc">Join the WaveLink Verify game and enter this code when prompted.</p>
+
+    <div class="verify-code" id="verifyCode" title="Click to copy">
+      ------
+      <span class="copy-hint">Click to copy</span>
+    </div>
+
+    <ol class="verify-steps">
+      <li><span class="n">1</span> Open the WaveLink Verify game in Roblox.</li>
+      <li><span class="n">2</span> Type the code above into the in-game box.</li>
+      <li><span class="n">3</span> Come back here — this page updates automatically.</li>
+    </ol>
+
+    <a href="#" class="btn btn-primary" id="openGameBtn" target="_blank" rel="noopener" style="width:100%; margin-bottom: 14px;">
+      Open Verification Game
+      <svg style="width:15px;height:15px;" viewBox="0 0 24 24" fill="none"><path d="M7 17L17 7M17 7H8M17 7v9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+
+    <div class="verify-status" id="verifyStatus">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="verifyStatusText">Waiting for verification…</span>
+    </div>
+
+    <div class="verify-actions">
+      <button class="btn btn-ghost" id="verifyCancelBtn" type="button">Cancel</button>
+      <button class="btn btn-ghost" id="verifyNewCodeBtn" type="button" style="display:none;">New code</button>
+    </div>
+  </div>
+</div>
+
+<script src="main.js" defer></script>
+<script src="auth-demo.js" defer></script>
+</body>
+</html>
