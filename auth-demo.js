@@ -184,4 +184,139 @@
       });
     }
   });
+
+  // ---- Description (bio) verification flow ----
+  var bioBtn = document.getElementById('bioVerifyBtn');
+  var bioOverlay = document.getElementById('bioOverlay');
+  var bioStepUsername = document.getElementById('bioStepUsername');
+  var bioStepPhrase = document.getElementById('bioStepPhrase');
+  var bioStepConfirm = document.getElementById('bioStepConfirm');
+  var bioUsernameInput = document.getElementById('bioUsernameInput');
+  var bioGeneratePhraseBtn = document.getElementById('bioGeneratePhraseBtn');
+  var bioPhraseEl = document.getElementById('bioPhrase');
+  var bioCheckBtn = document.getElementById('bioCheckBtn');
+  var bioStatus = document.getElementById('bioStatus');
+  var bioStatusText = document.getElementById('bioStatusText');
+  var bioConfirmAvatar = document.getElementById('bioConfirmAvatar');
+  var bioConfirmName = document.getElementById('bioConfirmName');
+  var bioConfirmUsername = document.getElementById('bioConfirmUsername');
+  var bioConfirmYesBtn = document.getElementById('bioConfirmYesBtn');
+  var bioConfirmNoBtn = document.getElementById('bioConfirmNoBtn');
+
+  var currentPhrase = null;
+  var pendingProfile = null;
+
+  function showBioStep(step){
+    bioStepUsername.hidden = step !== 'username';
+    bioStepPhrase.hidden = step !== 'phrase';
+    bioStepConfirm.hidden = step !== 'confirm';
+  }
+
+  function openBioOverlay(){
+    currentPhrase = 'wavelink-' + Math.random().toString(36).slice(2, 8);
+    bioUsernameInput.value = '';
+    showBioStep('username');
+    bioOverlay.classList.add('open');
+  }
+  function closeBioOverlay(){ bioOverlay.classList.remove('open'); }
+
+  if (bioBtn){
+    bioBtn.addEventListener('click', openBioOverlay);
+  }
+
+  [document.getElementById('bioCancelBtn1'), document.getElementById('bioCancelBtn2')].forEach(function(btn){
+    if (btn) btn.addEventListener('click', closeBioOverlay);
+  });
+
+  bioOverlay.addEventListener('click', function(e){ if (e.target === bioOverlay) closeBioOverlay(); });
+
+  if (bioGeneratePhraseBtn){
+    bioGeneratePhraseBtn.addEventListener('click', function(){
+      if (!bioUsernameInput.value.trim()){
+        bioUsernameInput.focus();
+        return;
+      }
+      bioPhraseEl.textContent = currentPhrase;
+      bioStatus.style.display = 'none';
+      showBioStep('phrase');
+    });
+  }
+
+  bioPhraseEl.addEventListener('click', function(){
+    if (navigator.clipboard) navigator.clipboard.writeText(currentPhrase);
+  });
+
+  if (bioCheckBtn){
+    bioCheckBtn.addEventListener('click', async function(){
+      bioStatus.style.display = 'flex';
+      bioStatus.classList.remove('success', 'error');
+      bioStatusText.textContent = 'Checking your profile…';
+      bioCheckBtn.disabled = true;
+
+      try{
+        var res = await fetch(WORKER_URL + '/api/bio-verify/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: bioUsernameInput.value.trim(), phrase: currentPhrase })
+        });
+        var data = await res.json();
+
+        if (!res.ok){
+          bioStatus.classList.add('error');
+          bioStatusText.textContent = data.error || 'Could not verify. Try again.';
+          bioCheckBtn.disabled = false;
+          return;
+        }
+
+        pendingProfile = data;
+        bioConfirmAvatar.src = data.avatarUrl || '';
+        bioConfirmName.textContent = data.displayName;
+        bioConfirmUsername.textContent = '@' + data.username;
+        showBioStep('confirm');
+      } catch(e){
+        bioStatus.classList.add('error');
+        bioStatusText.textContent = 'Network error — please try again.';
+      }
+      bioCheckBtn.disabled = false;
+    });
+  }
+
+  if (bioConfirmNoBtn){
+    bioConfirmNoBtn.addEventListener('click', function(){
+      pendingProfile = null;
+      showBioStep('username');
+    });
+  }
+
+  if (bioConfirmYesBtn){
+    bioConfirmYesBtn.addEventListener('click', async function(){
+      if (!pendingProfile) return;
+      bioConfirmYesBtn.disabled = true;
+      bioConfirmYesBtn.textContent = 'Logging you in…';
+
+      try{
+        var res = await fetch(WORKER_URL + '/api/bio-verify/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pendingProfile)
+        });
+        var data = await res.json();
+
+        var session = {
+          robloxUserId: pendingProfile.robloxUserId,
+          robloxUsername: pendingProfile.username,
+          robloxDisplayName: pendingProfile.displayName,
+          avatarUrl: pendingProfile.avatarUrl,
+          sessionToken: data.sessionToken,
+          connectedAt: new Date().toISOString()
+        };
+        try{ localStorage.setItem('wavelink_demo_session', JSON.stringify(session)); } catch(e){}
+
+        window.location.href = 'dashboard.html';
+      } catch(e){
+        bioConfirmYesBtn.disabled = false;
+        bioConfirmYesBtn.textContent = "Yes, that's me";
+      }
+    });
+  }
 })();
