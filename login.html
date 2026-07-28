@@ -61,6 +61,44 @@
 .roblox-btn .glyph{ width: 20px; height: 20px; border-radius: 5px; background: linear-gradient(155deg, #f2f2f2, #b9b9b9); display: grid; place-items: center; flex-shrink: 0; }
 .roblox-btn .glyph svg{ width: 12px; height: 12px; }
 
+.method-divider{
+  display: flex; align-items: center; gap: 12px; margin: 18px 0;
+}
+.method-divider::before, .method-divider::after{ content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+.method-divider span{ font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
+
+.best-badge{
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  color: #04121a; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  padding: 2px 7px; border-radius: 100px; margin-left: 8px; vertical-align: middle;
+}
+
+.bio-username-field{ text-align: left; margin-bottom: 16px; }
+.bio-username-field label{ display: block; font-size: 12.5px; font-weight: 500; color: var(--text-dim); margin-bottom: 7px; }
+.bio-username-field input{
+  width: 100%; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid var(--border); background: rgba(255,255,255,0.02);
+  color: var(--text); font-family: var(--font-body); font-size: 14px;
+}
+.bio-username-field input:focus{ border-color: rgba(63,214,255,0.4); }
+
+.bio-phrase{
+  font-family: var(--font-mono); font-size: 16px; font-weight: 600; letter-spacing: 0.03em;
+  color: var(--accent-soft); background: rgba(63,214,255,0.08);
+  border: 1px solid rgba(63,214,255,0.24); border-radius: 10px;
+  padding: 12px; margin-bottom: 16px; cursor: pointer; user-select: all; word-break: break-all;
+}
+
+.confirm-profile{
+  display: flex; align-items: center; gap: 12px; justify-content: center;
+  background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
+  border-radius: 12px; padding: 14px; margin-bottom: 18px;
+}
+.confirm-profile img{ width: 44px; height: 44px; border-radius: 10px; object-fit: cover; }
+.confirm-profile .txt{ text-align: left; }
+.confirm-profile .name{ font-size: 14px; font-weight: 600; color: var(--text); }
+.confirm-profile .sub{ font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+
 .auth-note{ font-size: 12.5px; color: var(--text-faint); line-height: 1.6; margin-top: 22px; }
 .auth-note a{ color: var(--accent-soft); }
 
@@ -183,6 +221,12 @@
         <span class="btn-label">Verify with Roblox</span>
       </button>
 
+      <div class="method-divider"><span>or</span></div>
+
+      <button class="btn btn-primary" id="bioVerifyBtn" type="button" style="width:100%;">
+        Description Verification <span class="best-badge">BEST</span>
+      </button>
+
       <p class="auth-note">By continuing, you agree to WaveLink's <a href="terms.html" target="_blank" rel="noopener">Terms of Service</a> and <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>. WaveLink is not affiliated with Roblox Corporation.</p>
     </div>
 
@@ -232,6 +276,59 @@
       <button class="btn btn-ghost" id="verifyCancelBtn" type="button">Cancel</button>
       <button class="btn btn-ghost" id="verifyNewCodeBtn" type="button" style="display:none;">New code</button>
     </div>
+  </div>
+</div>
+
+<div class="verify-overlay" id="bioOverlay" role="dialog" aria-modal="true" aria-labelledby="bioTitle">
+  <div class="verify-card">
+
+    <!-- Step 1: enter username -->
+    <div id="bioStepUsername">
+      <h3 id="bioTitle">Description Verification</h3>
+      <p class="desc">Enter your Roblox username to get a phrase to add to your profile.</p>
+      <div class="bio-username-field">
+        <label for="bioUsernameInput">Roblox username</label>
+        <input type="text" id="bioUsernameInput" placeholder="your_username" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" id="bioGeneratePhraseBtn" type="button" style="width:100%; margin-bottom: 10px;">Continue</button>
+      <button class="btn btn-ghost" id="bioCancelBtn1" type="button" style="width:100%;">Cancel</button>
+    </div>
+
+    <!-- Step 2: show phrase, wait for them to add it -->
+    <div id="bioStepPhrase" hidden>
+      <h3>Add this to your profile</h3>
+      <p class="desc">Copy this phrase into your Roblox "About" description, save it, then come back here.</p>
+      <div class="bio-phrase" id="bioPhrase" title="Click to copy">wavelink-xxxxxx</div>
+      <ol class="verify-steps">
+        <li><span class="n">1</span> Go to your Roblox profile and click Edit Profile.</li>
+        <li><span class="n">2</span> Paste the phrase above anywhere in your About/description.</li>
+        <li><span class="n">3</span> Save it on Roblox, then click Check below.</li>
+      </ol>
+      <button class="btn btn-primary" id="bioCheckBtn" type="button" style="width:100%; margin-bottom: 10px;">I've added it — Check</button>
+      <div class="verify-status" id="bioStatus" style="display:none;">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="bioStatusText"></span>
+      </div>
+      <button class="btn btn-ghost" id="bioCancelBtn2" type="button" style="width:100%;">Cancel</button>
+    </div>
+
+    <!-- Step 3: confirm it's really them -->
+    <div id="bioStepConfirm" hidden>
+      <h3>Is this you?</h3>
+      <p class="desc">We found this profile with your phrase in its description.</p>
+      <div class="confirm-profile">
+        <img id="bioConfirmAvatar" src="" alt="">
+        <div class="txt">
+          <div class="name" id="bioConfirmName">—</div>
+          <div class="sub" id="bioConfirmUsername">—</div>
+        </div>
+      </div>
+      <div class="verify-actions">
+        <button class="btn btn-ghost" id="bioConfirmNoBtn" type="button">No, that's not me</button>
+        <button class="btn btn-primary" id="bioConfirmYesBtn" type="button">Yes, that's me</button>
+      </div>
+    </div>
+
   </div>
 </div>
 
