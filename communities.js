@@ -36,7 +36,7 @@
 
   function renderGroups(groups){
     if (!groups.length){
-      container.innerHTML = '<div class="empty-state">You\'re not in any Roblox groups yet.</div>';
+      container.innerHTML = '<div class="empty-state">No communities to show yet. This lists groups you own or that already have a WaveLink community — join or own a group to see it here.</div>';
       return;
     }
 
@@ -122,7 +122,10 @@
       }
       if (!res.ok) throw new Error('bad response');
       var data = await res.json();
-      renderGroups(data.groups || []);
+      var visibleGroups = (data.groups || []).filter(function(g){
+        return g.isOwner || g.community;
+      });
+      renderGroups(visibleGroups);
     } catch(e){
       renderError("Couldn't load your Roblox groups. Please try again shortly.");
     }
