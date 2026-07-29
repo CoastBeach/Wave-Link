@@ -88,7 +88,7 @@
             '<p>' + (data.isOwner ? "You own this community." : (data.callerRoleName ? "Your rank: " + escapeHtml(data.callerRoleName) : "")) + '</p>' +
           '</div>';
       } else if (t.key === 'activity'){
-        inner = emptyTabHtml('Not built yet', "Play-time tracking will appear here once the Connections script is set up for this group's game.");
+        inner = '<div class="loading-state" id="activityLoading"><div class="spinner" aria-hidden="true"></div>Loading your play time…</div><div id="activityInfo" hidden></div>';
       } else if (t.key === 'actions'){
         inner = emptyTabHtml('Not built yet', 'Your own warnings and active/inactive status will show up here.');
       } else if (t.key === 'servers'){
@@ -143,7 +143,49 @@
     });
 
     loadServers(data.id);
+    loadActivity(data.id);
     if (data.isOwner){ loadConnectionInfo(data.id); }
+  }
+
+  function formatDuration(totalSeconds){
+    var hours = Math.floor(totalSeconds / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    if (hours === 0 && minutes === 0) return 'Less than a minute';
+    var parts = [];
+    if (hours > 0) parts.push(hours + (hours === 1 ? ' hour' : ' hours'));
+    if (minutes > 0) parts.push(minutes + (minutes === 1 ? ' minute' : ' minutes'));
+    return parts.join(' ');
+  }
+
+  async function loadActivity(communityId){
+    var loadingEl = document.getElementById('activityLoading');
+    var infoEl = document.getElementById('activityInfo');
+    if (!loadingEl || !infoEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/activity', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var activityData = await res.json();
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+
+      if (!res.ok){
+        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(activityData.error || "Couldn't load activity.") + '</div>';
+        return;
+      }
+
+      infoEl.innerHTML =
+        '<div class="panel-card">' +
+          '<div class="panel-card-head"><h3>Your play time</h3></div>' +
+          '<p style="font-size:22px; font-family: var(--font-display); font-weight:700; margin:0;">' + escapeHtml(formatDuration(activityData.totalSeconds || 0)) + '</p>' +
+          '<p style="font-size:12.5px; color: var(--text-faint); margin-top:8px;">Tracked automatically while you\'re in a server running this community\'s Connections script.</p>' +
+        '</div>';
+    } catch(e){
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+      infoEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
+    }
   }
 
   async function loadServers(communityId){
