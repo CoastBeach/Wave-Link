@@ -92,11 +92,11 @@
       } else if (t.key === 'actions'){
         inner = emptyTabHtml('Not built yet', 'Your own warnings and active/inactive status will show up here.');
       } else if (t.key === 'servers'){
-        inner = emptyTabHtml('Needs Connections first', 'Live game servers and player counts will show here once this community is connected to a Roblox game.');
+        inner = '<div class="loading-state" id="serversLoading"><div class="spinner" aria-hidden="true"></div>Loading live servers…</div><div id="serversList" hidden></div>';
       } else if (t.key === 'sessions'){
         inner = emptyTabHtml('Needs Connections first', 'Session scheduling and hosting will appear here once this community is connected to a Roblox game.');
       } else if (t.key === 'connections'){
-        inner = emptyTabHtml('Coming next', "This is where you'll get the script to paste into your Roblox game to connect it to WaveLink.");
+        inner = '<div class="loading-state" id="connectionsLoading"><div class="spinner" aria-hidden="true"></div>Loading setup info…</div><div id="connectionsInfo" hidden></div>';
       } else if (t.key === 'moderation'){
         inner = emptyTabHtml('Not built yet', 'Warnings and bans (with reasons) will be managed here.');
       }
@@ -141,6 +141,119 @@
         if (panel) panel.classList.add('active');
       });
     });
+
+    loadServers(data.id);
+    if (data.isOwner){ loadConnectionInfo(data.id); }
+  }
+
+  async function loadServers(communityId){
+    var loadingEl = document.getElementById('serversLoading');
+    var listEl = document.getElementById('serversList');
+    if (!loadingEl || !listEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/servers', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var data = await res.json();
+      loadingEl.hidden = true;
+      listEl.hidden = false;
+
+      if (!res.ok){
+        listEl.innerHTML = '<div class="error-state">' + escapeHtml(data.error || "Couldn't load servers.") + '</div>';
+        return;
+      }
+
+      var servers = data.servers || [];
+      if (servers.length === 0){
+        listEl.innerHTML = emptyTabHtml('No live servers', "No servers have reported in yet. Make sure the Connections script is running in your game.");
+        return;
+      }
+
+      var html = '<div class="groups-list">';
+      servers.forEach(function(s){
+        html +=
+          '<div class="group-card">' +
+            '<div class="group-icon placeholder"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M7 9h10M7 13h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></div>' +
+            '<div class="group-info">' +
+              '<div class="name">Server ' + escapeHtml(s.serverId.slice(0, 8)) + '…</div>' +
+              '<div class="meta"><span>' + s.playerCount + ' player' + (s.playerCount === 1 ? '' : 's') + '</span></div>' +
+            '</div>' +
+            (s.placeId ? '<a href="https://www.roblox.com/games/' + encodeURIComponent(s.placeId) + '" target="_blank" rel="noopener" class="btn btn-ghost">Open Game</a>' : '') +
+          '</div>';
+      });
+      html += '</div><p style="font-size:12.5px; color: var(--text-faint); margin-top:14px;">Joining this exact server from the browser isn\'t reliably possible on Roblox\'s side — once in-game \'joinserver\' commands are set up, players can jump straight to a specific server by its ID.</p>';
+      listEl.innerHTML = html;
+    } catch(e){
+      loadingEl.hidden = true;
+      listEl.hidden = false;
+      listEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
+    }
+  }
+
+  async function loadConnectionInfo(communityId){
+    var loadingEl = document.getElementById('connectionsLoading');
+    var infoEl = document.getElementById('connectionsInfo');
+    if (!loadingEl || !infoEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/connection-info', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var data = await res.json();
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+
+      if (!res.ok){
+        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(data.error || "Couldn't load setup info.") + '</div>';
+        return;
+      }
+
+      var script =
+        'local HttpService = game:GetService("HttpService")\n' +
+        'local Players = game:GetService("Players")\n\n' +
+        'local WORKER_URL = "' + WORKER_URL + '"\n' +
+        'local CONNECTION_SECRET = "' + data.connectionSecret + '"\n' +
+        'local HEARTBEAT_INTERVAL_SECONDS = 20\n\n' +
+        'local function sendHeartbeat()\n' +
+        '\tif game.JobId == "" then return end\n' +
+        '\tlocal playerList = {}\n' +
+        '\tfor _, player in ipairs(Players:GetPlayers()) do\n' +
+        '\t\ttable.insert(playerList, { userId = player.UserId, username = player.Name, displayName = player.DisplayName })\n' +
+        '\tend\n' +
+        '\tlocal payload = { connectionSecret = CONNECTION_SECRET, serverId = game.JobId, placeId = game.PlaceId, players = playerList }\n' +
+        '\tpcall(function()\n' +
+        '\t\tHttpService:PostAsync(WORKER_URL .. "/api/connections/heartbeat", HttpService:JSONEncode(payload), Enum.HttpContentType.ApplicationJson)\n' +
+        '\tend)\n' +
+        'end\n\n' +
+        'while true do\n' +
+        '\tsendHeartbeat()\n' +
+        '\ttask.wait(HEARTBEAT_INTERVAL_SECONDS)\n' +
+        'end';
+
+      infoEl.innerHTML =
+        '<div class="panel-card">' +
+          '<div class="panel-card-head"><h3>Setup instructions</h3></div>' +
+          '<ol class="verify-steps" style="margin-bottom:18px;">' +
+            '<li><span class="n">1</span> In Studio: Home &gt; Game Settings &gt; Security &gt; turn on "Allow HTTP Requests".</li>' +
+            '<li><span class="n">2</span> Insert a Script into ServerScriptService in your game.</li>' +
+            '<li><span class="n">3</span> Paste the script below into it exactly as shown — your secret is already filled in.</li>' +
+            '<li><span class="n">4</span> Publish your game. The Servers tab will start showing live data within about 20 seconds of someone joining.</li>' +
+          '</ol>' +
+          '<div class="bio-phrase" id="connectionScriptBox" style="text-align:left; white-space:pre-wrap; font-size:12px; cursor:pointer;" title="Click to copy">' + escapeHtml(script) + '</div>' +
+        '</div>';
+
+      var scriptBox = document.getElementById('connectionScriptBox');
+      if (scriptBox){
+        scriptBox.addEventListener('click', function(){
+          if (navigator.clipboard) navigator.clipboard.writeText(script);
+        });
+      }
+    } catch(e){
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+      infoEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
+    }
   }
 
   async function load(){
