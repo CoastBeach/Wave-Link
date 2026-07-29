@@ -48,7 +48,7 @@
 
       var actionHtml;
       if (g.community){
-        actionHtml = '<a href="#" class="btn btn-primary" data-community-id="' + escapeHtml(g.community.id) + '">Open Community</a>';
+        actionHtml = '<a href="community.html?id=' + encodeURIComponent(g.community.id) + '" class="btn btn-primary">Open Community</a>';
       } else if (g.isOwner){
         actionHtml = '<button class="btn btn-primary" data-create-group="' + escapeHtml(g.groupId) + '" type="button">Create Community</button>';
       } else {
