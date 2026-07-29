@@ -90,7 +90,7 @@
       } else if (t.key === 'activity'){
         inner = '<div class="loading-state" id="activityLoading"><div class="spinner" aria-hidden="true"></div>Loading your play time…</div><div id="activityInfo" hidden></div>';
       } else if (t.key === 'actions'){
-        inner = emptyTabHtml('Not built yet', 'Your own warnings and active/inactive status will show up here.');
+        inner = '<div class="loading-state" id="actionsLoading"><div class="spinner" aria-hidden="true"></div>Loading your record…</div><div id="actionsInfo" hidden></div>';
       } else if (t.key === 'servers'){
         inner = '<div class="loading-state" id="serversLoading"><div class="spinner" aria-hidden="true"></div>Loading live servers…</div><div id="serversList" hidden></div>';
       } else if (t.key === 'sessions'){
@@ -98,7 +98,19 @@
       } else if (t.key === 'connections'){
         inner = '<div class="loading-state" id="connectionsLoading"><div class="spinner" aria-hidden="true"></div>Loading setup info…</div><div id="connectionsInfo" hidden></div>';
       } else if (t.key === 'moderation'){
-        inner = emptyTabHtml('Not built yet', 'Warnings and bans (with reasons) will be managed here.');
+        inner =
+          '<div class="panel-card">' +
+            '<div class="panel-card-head"><h3>Issue action</h3></div>' +
+            '<div class="bio-username-field"><label for="modTargetUsername">Roblox username</label><input type="text" id="modTargetUsername" placeholder="username" autocomplete="off"></div>' +
+            '<div class="bio-username-field"><label for="modReason">Reason</label><input type="text" id="modReason" placeholder="Reason for this action" autocomplete="off"></div>' +
+            '<div style="display:flex; gap:10px; margin-bottom: 6px;">' +
+              '<button class="btn btn-ghost" id="modIssueWarningBtn" type="button" style="flex:1;">Give Warning</button>' +
+              '<button class="btn btn-primary" id="modIssueBanBtn" type="button" style="flex:1; background: linear-gradient(135deg, #ff8a8a, #ff5a5a); color:#2a0a0a;">Ban</button>' +
+            '</div>' +
+            '<div class="verify-status" id="modIssueStatus" style="display:none;"><span class="spinner" aria-hidden="true"></span><span id="modIssueStatusText"></span></div>' +
+          '</div>' +
+          '<div class="loading-state" id="modLogLoading"><div class="spinner" aria-hidden="true"></div>Loading moderation log…</div>' +
+          '<div id="modLogList" hidden></div>';
       }
       return '<div class="tab-panel' + (i === 0 ? ' active' : '') + '" data-panel="' + t.key + '">' + inner + '</div>';
     }).join('');
@@ -144,7 +156,9 @@
 
     loadServers(data.id);
     loadActivity(data.id);
+    loadActions(data.id);
     if (data.isOwner){ loadConnectionInfo(data.id); }
+    if (data.isEditor){ loadModerationLog(data.id); wireModerationForm(data.id); }
   }
 
   function formatDuration(totalSeconds){
@@ -296,6 +310,166 @@
       infoEl.hidden = false;
       infoEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
     }
+  }
+
+  async function loadActions(communityId){
+    var loadingEl = document.getElementById('actionsLoading');
+    var infoEl = document.getElementById('actionsInfo');
+    if (!loadingEl || !infoEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/actions', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var actionData = await res.json();
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+
+      if (!res.ok){
+        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(actionData.error || "Couldn't load your record.") + '</div>';
+        return;
+      }
+
+      var statusHtml = actionData.isBanned
+        ? '<span class="badge" style="background: rgba(255,90,90,0.12); color:#ff8a8a; border:1px solid rgba(255,90,90,0.28);">Banned</span>'
+        : '<span class="badge badge-success">Active</span>';
+
+      var listHtml = '';
+      if (!actionData.actions || actionData.actions.length === 0){
+        listHtml = '<p style="font-size:13.5px; color: var(--text-dim);">No warnings or bans on your record.</p>';
+      } else {
+        listHtml = '<div class="activity-list">' + actionData.actions.map(function(a){
+          var label = a.type === 'ban' ? 'Ban' : 'Warning';
+          var revokedTag = a.revoked ? ' <span style="color: var(--text-faint);">(revoked)</span>' : '';
+          return '<div class="activity-row"><span class="activity-dot" aria-hidden="true"></span><div class="txt"><b>' + escapeHtml(label) + '</b>' + revokedTag + ': ' + escapeHtml(a.reason) + '<div class="time">' + new Date(a.createdAt).toLocaleString() + '</div></div></div>';
+        }).join('') + '</div>';
+      }
+
+      infoEl.innerHTML =
+        '<div class="panel-card">' +
+          '<div class="panel-card-head"><h3>Your standing</h3>' + statusHtml + '</div>' +
+          listHtml +
+        '</div>';
+    } catch(e){
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+      infoEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
+    }
+  }
+
+  function renderModerationLog(actions){
+    var listEl = document.getElementById('modLogList');
+    if (!listEl) return;
+
+    if (!actions || actions.length === 0){
+      listEl.innerHTML = emptyTabHtml('No actions yet', 'Warnings and bans you issue will appear here.');
+      return;
+    }
+
+    listEl.innerHTML = '<div class="panel-card"><div class="panel-card-head"><h3>Moderation log</h3></div><div class="member-list">' +
+      actions.map(function(a){
+        var label = a.type === 'ban' ? 'Ban' : 'Warning';
+        var revokeBtn = a.revoked
+          ? '<span style="color: var(--text-faint); font-size:12px;">Revoked</span>'
+          : '<button class="btn btn-ghost" data-revoke-id="' + escapeHtml(a.id) + '" style="padding:6px 10px; font-size:12px;">Revoke</button>';
+        return '<div class="member-row"><div><b>' + escapeHtml(a.targetUsername) + '</b> — ' + escapeHtml(label) + ': ' + escapeHtml(a.reason) +
+          '<div style="font-size:11px; color: var(--text-faint);">by ' + escapeHtml(a.issuedByUsername) + ' · ' + new Date(a.createdAt).toLocaleString() + '</div></div>' + revokeBtn + '</div>';
+      }).join('') +
+    '</div></div>';
+
+    listEl.querySelectorAll('[data-revoke-id]').forEach(function(btn){
+      btn.addEventListener('click', function(){ revokeModeration(communityId, btn.getAttribute('data-revoke-id')); });
+    });
+  }
+
+  async function loadModerationLog(communityId){
+    var loadingEl = document.getElementById('modLogLoading');
+    var listEl = document.getElementById('modLogList');
+    if (!loadingEl || !listEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/moderation/log', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var data = await res.json();
+      loadingEl.hidden = true;
+      listEl.hidden = false;
+
+      if (!res.ok){
+        listEl.innerHTML = '<div class="error-state">' + escapeHtml(data.error || "Couldn't load the moderation log.") + '</div>';
+        return;
+      }
+      renderModerationLog(data.actions);
+    } catch(e){
+      loadingEl.hidden = true;
+      listEl.hidden = false;
+      listEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
+    }
+  }
+
+  async function revokeModeration(communityId, actionId){
+    try{
+      await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/moderation/' + encodeURIComponent(actionId) + '/revoke', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      loadModerationLog(communityId);
+    } catch(e){ /* silently ignore — log stays as-is, they can retry */ }
+  }
+
+  function wireModerationForm(communityId){
+    var usernameInput = document.getElementById('modTargetUsername');
+    var reasonInput = document.getElementById('modReason');
+    var warningBtn = document.getElementById('modIssueWarningBtn');
+    var banBtn = document.getElementById('modIssueBanBtn');
+    var statusBox = document.getElementById('modIssueStatus');
+    var statusText = document.getElementById('modIssueStatusText');
+    if (!warningBtn || !banBtn) return;
+
+    async function issue(type){
+      var username = usernameInput.value.trim();
+      var reason = reasonInput.value.trim();
+      if (!username || !reason){
+        statusBox.style.display = 'flex';
+        statusBox.classList.add('error');
+        statusText.textContent = 'Enter a username and reason first.';
+        return;
+      }
+
+      statusBox.style.display = 'flex';
+      statusBox.classList.remove('error', 'success');
+      statusText.textContent = 'Submitting…';
+      warningBtn.disabled = true;
+      banBtn.disabled = true;
+
+      try{
+        var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/moderation/issue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+          body: JSON.stringify({ targetUsername: username, type: type, reason: reason })
+        });
+        var data = await res.json();
+
+        if (!res.ok){
+          statusBox.classList.add('error');
+          statusText.textContent = data.error || 'Could not issue this action.';
+        } else {
+          statusBox.classList.add('success');
+          statusText.textContent = 'Done — ' + type + ' issued to ' + data.targetUsername + '.';
+          usernameInput.value = '';
+          reasonInput.value = '';
+          loadModerationLog(communityId);
+        }
+      } catch(e){
+        statusBox.classList.add('error');
+        statusText.textContent = 'Network error — try again.';
+      }
+      warningBtn.disabled = false;
+      banBtn.disabled = false;
+    }
+
+    warningBtn.addEventListener('click', function(){ issue('warning'); });
+    banBtn.addEventListener('click', function(){ issue('ban'); });
   }
 
   async function load(){
