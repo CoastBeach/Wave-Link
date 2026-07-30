@@ -94,7 +94,7 @@
       } else if (t.key === 'servers'){
         inner = '<div class="loading-state" id="serversLoading"><div class="spinner" aria-hidden="true"></div>Loading live servers…</div><div id="serversList" hidden></div>';
       } else if (t.key === 'sessions'){
-        inner = emptyTabHtml('Needs Connections first', 'Session scheduling and hosting will appear here once this community is connected to a Roblox game.');
+        inner = '<div class="loading-state" id="sessionsLoading"><div class="spinner" aria-hidden="true"></div>Loading Sessions…</div><div id="sessionsInfo" hidden></div>';
       } else if (t.key === 'connections'){
         inner = '<div class="loading-state" id="connectionsLoading"><div class="spinner" aria-hidden="true"></div>Loading setup info…</div><div id="connectionsInfo" hidden></div>';
       } else if (t.key === 'moderation'){
@@ -157,6 +157,7 @@
     loadServers(data.id);
     loadActivity(data.id);
     loadActions(data.id);
+    loadSessions(data.id, data);
     if (data.isOwner){ loadConnectionInfo(data.id); }
     if (data.isEditor){ loadModerationLog(data.id); wireModerationForm(data.id); }
   }
@@ -470,6 +471,187 @@
 
     warningBtn.addEventListener('click', function(){ issue('warning'); });
     banBtn.addEventListener('click', function(){ issue('ban'); });
+  }
+
+  async function loadSessions(communityId, communityData){
+    var loadingEl = document.getElementById('sessionsLoading');
+    var infoEl = document.getElementById('sessionsInfo');
+    if (!loadingEl || !infoEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-types', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var typesData = await res.json();
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+
+      if (!res.ok){
+        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(typesData.error || "Couldn't load Sessions.") + '</div>';
+        return;
+      }
+
+      renderSessions(communityId, communityData, typesData.sessionTypes || []);
+    } catch(e){
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+      infoEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
+    }
+  }
+
+  function renderSessions(communityId, communityData, sessionTypes){
+    var infoEl = document.getElementById('sessionsInfo');
+    var canManage = communityData.isOwner || communityData.canManageSessions;
+    var html = '';
+
+    if (communityData.isOwner){
+      var roles = communityData.groupRoles || [];
+      function checkboxGroup(prefix, ranks){
+        return roles.map(function(r){
+          var checked = ranks.includes(r.rank) ? 'checked' : '';
+          return '<label style="display:flex; align-items:center; gap:8px; font-size:13px; color: var(--text-dim); margin-bottom:6px;">' +
+            '<input type="checkbox" class="' + prefix + '-rank-checkbox" value="' + r.rank + '" ' + checked + '> ' + escapeHtml(r.name) +
+          '</label>';
+        }).join('');
+      }
+
+      html +=
+        '<div class="panel-card">' +
+          '<div class="panel-card-head"><h3>Session Permissions</h3></div>' +
+          '<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:16px; margin-bottom:16px;">' +
+            '<div><b style="font-size:12.5px; color: var(--text);">Can Manage</b><div style="margin-top:8px;">' + checkboxGroup('manage', communityData.manageRanks || []) + '</div></div>' +
+            '<div><b style="font-size:12.5px; color: var(--text);">Can Host</b><div style="margin-top:8px;">' + checkboxGroup('host', communityData.hostRanks || []) + '</div></div>' +
+            '<div><b style="font-size:12.5px; color: var(--text);">Can Supervise</b><div style="margin-top:8px;">' + checkboxGroup('supervise', communityData.superviseRanks || []) + '</div></div>' +
+          '</div>' +
+          '<button class="btn btn-primary" id="saveSessionPermsBtn" type="button">Save Permissions</button>' +
+          '<div class="verify-status" id="sessionPermsStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="sessionPermsStatusText"></span></div>' +
+        '</div>';
+    }
+
+    if (canManage){
+      html +=
+        '<div class="panel-card">' +
+          '<div class="panel-card-head"><h3>Session Types (' + sessionTypes.length + '/10)</h3></div>';
+
+      if (sessionTypes.length === 0){
+        html += '<p style="font-size:13.5px; color: var(--text-dim); margin-bottom:16px;">No session types yet.</p>';
+      } else {
+        html += '<div class="member-list" style="margin-bottom:18px;">' + sessionTypes.map(function(st){
+          return '<div class="member-row"><div><b>' + escapeHtml(st.name) + '</b><div style="font-size:12px; color: var(--text-faint);">' +
+            st.phases.map(function(p){ return escapeHtml(p.name); }).join(' → ') +
+          '</div></div><button class="btn btn-ghost" data-delete-type="' + escapeHtml(st.id) + '" style="padding:6px 10px; font-size:12px;">Delete</button></div>';
+        }).join('') + '</div>';
+      }
+
+      if (sessionTypes.length < 10){
+        html +=
+          '<div class="bio-username-field"><label for="newTypeName">New session type name</label><input type="text" id="newTypeName" placeholder="e.g. Training Session"></div>' +
+          '<div class="bio-username-field"><label for="newTypePhases">Phases, in order (comma separated, up to 10)</label><input type="text" id="newTypePhases" placeholder="e.g. Introduction, Q&A, Final Evaluation"></div>' +
+          '<button class="btn btn-primary" id="createTypeBtn" type="button">Create Session Type</button>' +
+          '<div class="verify-status" id="createTypeStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="createTypeStatusText"></span></div>';
+      }
+      html += '</div>';
+      html += emptyTabHtml('Coming next', 'Hosting a live session (picking a type, sending a server ID, running phases, promoting and grading) is the next piece to build.');
+    } else {
+      html = emptyTabHtml('No access yet', "You don't have Session management access in this community. Ask the owner to grant it in Session Permissions.");
+    }
+
+    infoEl.innerHTML = html;
+
+    var savePermsBtn = document.getElementById('saveSessionPermsBtn');
+    if (savePermsBtn){
+      savePermsBtn.addEventListener('click', function(){ saveSessionPermissions(communityId); });
+    }
+    var createTypeBtn = document.getElementById('createTypeBtn');
+    if (createTypeBtn){
+      createTypeBtn.addEventListener('click', function(){ createSessionType(communityId, communityData); });
+    }
+    infoEl.querySelectorAll('[data-delete-type]').forEach(function(btn){
+      btn.addEventListener('click', function(){ deleteSessionType(communityId, communityData, btn.getAttribute('data-delete-type')); });
+    });
+  }
+
+  async function saveSessionPermissions(communityId){
+    var statusBox = document.getElementById('sessionPermsStatus');
+    var statusText = document.getElementById('sessionPermsStatusText');
+    statusBox.style.display = 'flex';
+    statusBox.classList.remove('error', 'success');
+    statusText.textContent = 'Saving…';
+
+    function collect(prefix){
+      return Array.prototype.map.call(
+        document.querySelectorAll('.' + prefix + '-rank-checkbox:checked'),
+        function(cb){ return Number(cb.value); }
+      );
+    }
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-permissions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+        body: JSON.stringify({ manageRanks: collect('manage'), hostRanks: collect('host'), superviseRanks: collect('supervise') })
+      });
+      if (!res.ok){
+        var data = await res.json();
+        statusBox.classList.add('error');
+        statusText.textContent = data.error || 'Could not save.';
+        return;
+      }
+      statusBox.classList.add('success');
+      statusText.textContent = 'Saved!';
+    } catch(e){
+      statusBox.classList.add('error');
+      statusText.textContent = 'Network error — try again.';
+    }
+  }
+
+  async function createSessionType(communityId, communityData){
+    var nameInput = document.getElementById('newTypeName');
+    var phasesInput = document.getElementById('newTypePhases');
+    var statusBox = document.getElementById('createTypeStatus');
+    var statusText = document.getElementById('createTypeStatusText');
+
+    var name = nameInput.value.trim();
+    var phaseNames = phasesInput.value.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+
+    if (!name || phaseNames.length === 0){
+      statusBox.style.display = 'flex';
+      statusBox.classList.add('error');
+      statusText.textContent = 'Enter a name and at least one phase.';
+      return;
+    }
+
+    statusBox.style.display = 'flex';
+    statusBox.classList.remove('error', 'success');
+    statusText.textContent = 'Creating…';
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-types', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+        body: JSON.stringify({ name: name, phaseNames: phaseNames })
+      });
+      var data = await res.json();
+      if (!res.ok){
+        statusBox.classList.add('error');
+        statusText.textContent = data.error || 'Could not create session type.';
+        return;
+      }
+      loadSessions(communityId, communityData);
+    } catch(e){
+      statusBox.classList.add('error');
+      statusText.textContent = 'Network error — try again.';
+    }
+  }
+
+  async function deleteSessionType(communityId, communityData, typeId){
+    try{
+      await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-types/' + encodeURIComponent(typeId), {
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      loadSessions(communityId, communityData);
+    } catch(e){ /* they can retry */ }
   }
 
   async function load(){
