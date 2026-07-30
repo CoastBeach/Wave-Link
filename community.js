@@ -48,6 +48,8 @@
     { key: 'actions', label: 'Actions' },
     { key: 'servers', label: 'Servers' },
     { key: 'sessions', label: 'Sessions' },
+    { key: 'session-management', label: 'Session Management', manageOnly: true },
+    { key: 'rank-management', label: 'Rank Management', ownerOnly: true },
     { key: 'connections', label: 'Connections', ownerOnly: true },
     { key: 'moderation', label: 'Moderation', editorOnly: true }
   ];
@@ -71,6 +73,7 @@
     var visibleTabs = TABS.filter(function(t){
       if (t.ownerOnly && !data.isOwner) return false;
       if (t.editorOnly && !data.isEditor) return false;
+      if (t.manageOnly && !(data.isOwner || data.canManageSessions)) return false;
       return true;
     });
 
@@ -94,7 +97,11 @@
       } else if (t.key === 'servers'){
         inner = '<div class="loading-state" id="serversLoading"><div class="spinner" aria-hidden="true"></div>Loading live servers…</div><div id="serversList" hidden></div>';
       } else if (t.key === 'sessions'){
-        inner = '<div class="loading-state" id="sessionsLoading"><div class="spinner" aria-hidden="true"></div>Loading Sessions…</div><div id="sessionsInfo" hidden></div>';
+        inner = emptyTabHtml('Coming next', 'Hosting a live session (picking a type, sending a server ID, running phases, promoting and grading) is the next piece to build.');
+      } else if (t.key === 'session-management'){
+        inner = '<div class="loading-state" id="sessionMgmtLoading"><div class="spinner" aria-hidden="true"></div>Loading session types…</div><div id="sessionMgmtInfo" hidden></div>';
+      } else if (t.key === 'rank-management'){
+        inner = '<div class="loading-state" id="rankMgmtLoading"><div class="spinner" aria-hidden="true"></div>Loading rank permissions…</div><div id="rankMgmtInfo" hidden></div>';
       } else if (t.key === 'connections'){
         inner = '<div class="loading-state" id="connectionsLoading"><div class="spinner" aria-hidden="true"></div>Loading setup info…</div><div id="connectionsInfo" hidden></div>';
       } else if (t.key === 'moderation'){
@@ -157,7 +164,8 @@
     loadServers(data.id);
     loadActivity(data.id);
     loadActions(data.id);
-    loadSessions(data.id, data);
+    if (data.isOwner || data.canManageSessions){ loadSessionManagement(data.id, data); }
+    if (data.isOwner){ loadRankManagement(data.id, data); }
     if (data.isOwner){ loadConnectionInfo(data.id); }
     if (data.isEditor){ loadModerationLog(data.id); wireModerationForm(data.id); }
   }
@@ -473,9 +481,9 @@
     banBtn.addEventListener('click', function(){ issue('ban'); });
   }
 
-  async function loadSessions(communityId, communityData){
-    var loadingEl = document.getElementById('sessionsLoading');
-    var infoEl = document.getElementById('sessionsInfo');
+  async function loadSessionManagement(communityId, communityData){
+    var loadingEl = document.getElementById('sessionMgmtLoading');
+    var infoEl = document.getElementById('sessionMgmtInfo');
     if (!loadingEl || !infoEl) return;
 
     try{
@@ -487,11 +495,11 @@
       infoEl.hidden = false;
 
       if (!res.ok){
-        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(typesData.error || "Couldn't load Sessions.") + '</div>';
+        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(typesData.error || "Couldn't load session types.") + '</div>';
         return;
       }
 
-      renderSessions(communityId, communityData, typesData.sessionTypes || []);
+      renderSessionManagement(communityId, communityData, typesData.sessionTypes || []);
     } catch(e){
       loadingEl.hidden = true;
       infoEl.hidden = false;
@@ -499,69 +507,33 @@
     }
   }
 
-  function renderSessions(communityId, communityData, sessionTypes){
-    var infoEl = document.getElementById('sessionsInfo');
-    var canManage = communityData.isOwner || communityData.canManageSessions;
-    var html = '';
+  function renderSessionManagement(communityId, communityData, sessionTypes){
+    var infoEl = document.getElementById('sessionMgmtInfo');
+    var html =
+      '<div class="panel-card">' +
+        '<div class="panel-card-head"><h3>Session Types (' + sessionTypes.length + '/10)</h3></div>';
 
-    if (communityData.isOwner){
-      var roles = communityData.groupRoles || [];
-      function checkboxGroup(prefix, ranks){
-        return roles.map(function(r){
-          var checked = ranks.includes(r.rank) ? 'checked' : '';
-          return '<label style="display:flex; align-items:center; gap:8px; font-size:13px; color: var(--text-dim); margin-bottom:6px;">' +
-            '<input type="checkbox" class="' + prefix + '-rank-checkbox" value="' + r.rank + '" ' + checked + '> ' + escapeHtml(r.name) +
-          '</label>';
-        }).join('');
-      }
-
-      html +=
-        '<div class="panel-card">' +
-          '<div class="panel-card-head"><h3>Session Permissions</h3></div>' +
-          '<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:16px; margin-bottom:16px;">' +
-            '<div><b style="font-size:12.5px; color: var(--text);">Can Manage</b><div style="margin-top:8px;">' + checkboxGroup('manage', communityData.manageRanks || []) + '</div></div>' +
-            '<div><b style="font-size:12.5px; color: var(--text);">Can Host</b><div style="margin-top:8px;">' + checkboxGroup('host', communityData.hostRanks || []) + '</div></div>' +
-            '<div><b style="font-size:12.5px; color: var(--text);">Can Supervise</b><div style="margin-top:8px;">' + checkboxGroup('supervise', communityData.superviseRanks || []) + '</div></div>' +
-          '</div>' +
-          '<button class="btn btn-primary" id="saveSessionPermsBtn" type="button">Save Permissions</button>' +
-          '<div class="verify-status" id="sessionPermsStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="sessionPermsStatusText"></span></div>' +
-        '</div>';
-    }
-
-    if (canManage){
-      html +=
-        '<div class="panel-card">' +
-          '<div class="panel-card-head"><h3>Session Types (' + sessionTypes.length + '/10)</h3></div>';
-
-      if (sessionTypes.length === 0){
-        html += '<p style="font-size:13.5px; color: var(--text-dim); margin-bottom:16px;">No session types yet.</p>';
-      } else {
-        html += '<div class="member-list" style="margin-bottom:18px;">' + sessionTypes.map(function(st){
-          return '<div class="member-row"><div><b>' + escapeHtml(st.name) + '</b><div style="font-size:12px; color: var(--text-faint);">' +
-            st.phases.map(function(p){ return escapeHtml(p.name); }).join(' → ') +
-          '</div></div><button class="btn btn-ghost" data-delete-type="' + escapeHtml(st.id) + '" style="padding:6px 10px; font-size:12px;">Delete</button></div>';
-        }).join('') + '</div>';
-      }
-
-      if (sessionTypes.length < 10){
-        html +=
-          '<div class="bio-username-field"><label for="newTypeName">New session type name</label><input type="text" id="newTypeName" placeholder="e.g. Training Session"></div>' +
-          '<div class="bio-username-field"><label for="newTypePhases">Phases, in order (comma separated, up to 10)</label><input type="text" id="newTypePhases" placeholder="e.g. Introduction, Q&A, Final Evaluation"></div>' +
-          '<button class="btn btn-primary" id="createTypeBtn" type="button">Create Session Type</button>' +
-          '<div class="verify-status" id="createTypeStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="createTypeStatusText"></span></div>';
-      }
-      html += '</div>';
-      html += emptyTabHtml('Coming next', 'Hosting a live session (picking a type, sending a server ID, running phases, promoting and grading) is the next piece to build.');
+    if (sessionTypes.length === 0){
+      html += '<p style="font-size:13.5px; color: var(--text-dim); margin-bottom:16px;">No session types yet.</p>';
     } else {
-      html = emptyTabHtml('No access yet', "You don't have Session management access in this community. Ask the owner to grant it in Session Permissions.");
+      html += '<div class="member-list" style="margin-bottom:18px;">' + sessionTypes.map(function(st){
+        return '<div class="member-row"><div><b>' + escapeHtml(st.name) + '</b><div style="font-size:12px; color: var(--text-faint);">' +
+          st.phases.map(function(p){ return escapeHtml(p.name); }).join(' → ') +
+        '</div></div><button class="btn btn-ghost" data-delete-type="' + escapeHtml(st.id) + '" style="padding:6px 10px; font-size:12px;">Delete</button></div>';
+      }).join('') + '</div>';
     }
+
+    if (sessionTypes.length < 10){
+      html +=
+        '<div class="bio-username-field"><label for="newTypeName">New session type name</label><input type="text" id="newTypeName" placeholder="e.g. Training Session"></div>' +
+        '<div class="bio-username-field"><label for="newTypePhases">Phases, in order (comma separated, up to 10)</label><input type="text" id="newTypePhases" placeholder="e.g. Introduction, Q&A, Final Evaluation"></div>' +
+        '<button class="btn btn-primary" id="createTypeBtn" type="button">Create Session Type</button>' +
+        '<div class="verify-status" id="createTypeStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="createTypeStatusText"></span></div>';
+    }
+    html += '</div>';
 
     infoEl.innerHTML = html;
 
-    var savePermsBtn = document.getElementById('saveSessionPermsBtn');
-    if (savePermsBtn){
-      savePermsBtn.addEventListener('click', function(){ saveSessionPermissions(communityId); });
-    }
     var createTypeBtn = document.getElementById('createTypeBtn');
     if (createTypeBtn){
       createTypeBtn.addEventListener('click', function(){ createSessionType(communityId, communityData); });
@@ -569,40 +541,6 @@
     infoEl.querySelectorAll('[data-delete-type]').forEach(function(btn){
       btn.addEventListener('click', function(){ deleteSessionType(communityId, communityData, btn.getAttribute('data-delete-type')); });
     });
-  }
-
-  async function saveSessionPermissions(communityId){
-    var statusBox = document.getElementById('sessionPermsStatus');
-    var statusText = document.getElementById('sessionPermsStatusText');
-    statusBox.style.display = 'flex';
-    statusBox.classList.remove('error', 'success');
-    statusText.textContent = 'Saving…';
-
-    function collect(prefix){
-      return Array.prototype.map.call(
-        document.querySelectorAll('.' + prefix + '-rank-checkbox:checked'),
-        function(cb){ return Number(cb.value); }
-      );
-    }
-
-    try{
-      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-permissions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
-        body: JSON.stringify({ manageRanks: collect('manage'), hostRanks: collect('host'), superviseRanks: collect('supervise') })
-      });
-      if (!res.ok){
-        var data = await res.json();
-        statusBox.classList.add('error');
-        statusText.textContent = data.error || 'Could not save.';
-        return;
-      }
-      statusBox.classList.add('success');
-      statusText.textContent = 'Saved!';
-    } catch(e){
-      statusBox.classList.add('error');
-      statusText.textContent = 'Network error — try again.';
-    }
   }
 
   async function createSessionType(communityId, communityData){
@@ -637,7 +575,7 @@
         statusText.textContent = data.error || 'Could not create session type.';
         return;
       }
-      loadSessions(communityId, communityData);
+      loadSessionManagement(communityId, communityData);
     } catch(e){
       statusBox.classList.add('error');
       statusText.textContent = 'Network error — try again.';
@@ -650,8 +588,90 @@
         method: 'DELETE',
         headers: { 'Authorization': 'Bearer ' + session.sessionToken }
       });
-      loadSessions(communityId, communityData);
+      loadSessionManagement(communityId, communityData);
     } catch(e){ /* they can retry */ }
+  }
+
+  // ---- Rank Management (owner-only): consolidates Moderation access + all Session ranks ----
+
+  function loadRankManagement(communityId, communityData){
+    var loadingEl = document.getElementById('rankMgmtLoading');
+    var infoEl = document.getElementById('rankMgmtInfo');
+    if (!loadingEl || !infoEl) return;
+
+    loadingEl.hidden = true;
+    infoEl.hidden = false;
+
+    var roles = communityData.groupRoles || [];
+    function checkboxGroup(prefix, ranks){
+      return roles.map(function(r){
+        var checked = ranks.includes(r.rank) ? 'checked' : '';
+        return '<label style="display:flex; align-items:center; gap:8px; font-size:13px; color: var(--text-dim); margin-bottom:6px;">' +
+          '<input type="checkbox" class="' + prefix + '-rank-checkbox" value="' + r.rank + '" ' + checked + '> ' + escapeHtml(r.name) +
+        '</label>';
+      }).join('');
+    }
+
+    infoEl.innerHTML =
+      '<div class="panel-card">' +
+        '<div class="panel-card-head"><h3>Rank Management</h3></div>' +
+        '<p style="font-size:13px; color: var(--text-dim); margin: 0 0 18px;">Choose which ranks can access each part of this community.</p>' +
+        '<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:16px; margin-bottom:20px;">' +
+          '<div><b style="font-size:12.5px; color: var(--text);">Moderation Access</b><div style="margin-top:8px;">' + checkboxGroup('editor', communityData.editorRanks || []) + '</div></div>' +
+          '<div><b style="font-size:12.5px; color: var(--text);">Can Manage Sessions</b><div style="margin-top:8px;">' + checkboxGroup('manage', communityData.manageRanks || []) + '</div></div>' +
+          '<div><b style="font-size:12.5px; color: var(--text);">Can Host Sessions</b><div style="margin-top:8px;">' + checkboxGroup('host', communityData.hostRanks || []) + '</div></div>' +
+          '<div><b style="font-size:12.5px; color: var(--text);">Can Supervise Sessions</b><div style="margin-top:8px;">' + checkboxGroup('supervise', communityData.superviseRanks || []) + '</div></div>' +
+        '</div>' +
+        '<button class="btn btn-primary" id="saveRankMgmtBtn" type="button">Save All Permissions</button>' +
+        '<div class="verify-status" id="rankMgmtStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="rankMgmtStatusText"></span></div>' +
+      '</div>';
+
+    var saveBtn = document.getElementById('saveRankMgmtBtn');
+    if (saveBtn){
+      saveBtn.addEventListener('click', function(){ saveRankManagement(communityId); });
+    }
+  }
+
+  async function saveRankManagement(communityId){
+    var statusBox = document.getElementById('rankMgmtStatus');
+    var statusText = document.getElementById('rankMgmtStatusText');
+    statusBox.style.display = 'flex';
+    statusBox.classList.remove('error', 'success');
+    statusText.textContent = 'Saving…';
+
+    function collect(prefix){
+      return Array.prototype.map.call(
+        document.querySelectorAll('.' + prefix + '-rank-checkbox:checked'),
+        function(cb){ return Number(cb.value); }
+      );
+    }
+
+    try{
+      var results = await Promise.all([
+        fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/permissions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+          body: JSON.stringify({ editorRanks: collect('editor') })
+        }),
+        fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-permissions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+          body: JSON.stringify({ manageRanks: collect('manage'), hostRanks: collect('host'), superviseRanks: collect('supervise') })
+        })
+      ]);
+
+      var anyFailed = results.some(function(r){ return !r.ok; });
+      if (anyFailed){
+        statusBox.classList.add('error');
+        statusText.textContent = 'Some permissions could not be saved — try again.';
+        return;
+      }
+      statusBox.classList.add('success');
+      statusText.textContent = 'Saved!';
+    } catch(e){
+      statusBox.classList.add('error');
+      statusText.textContent = 'Network error — try again.';
+    }
   }
 
   async function load(){
