@@ -97,7 +97,7 @@
       } else if (t.key === 'servers'){
         inner = '<div class="loading-state" id="serversLoading"><div class="spinner" aria-hidden="true"></div>Loading live servers…</div><div id="serversList" hidden></div>';
       } else if (t.key === 'sessions'){
-        inner = emptyTabHtml('Coming next', 'Hosting a live session (picking a type, sending a server ID, running phases, promoting and grading) is the next piece to build.');
+        inner = '<div class="loading-state" id="sessionsLoading"><div class="spinner" aria-hidden="true"></div>Loading sessions…</div><div id="sessionsInfo" hidden></div>';
       } else if (t.key === 'session-management'){
         inner = '<div class="loading-state" id="sessionMgmtLoading"><div class="spinner" aria-hidden="true"></div>Loading session types…</div><div id="sessionMgmtInfo" hidden></div>';
       } else if (t.key === 'rank-management'){
@@ -164,6 +164,7 @@
     loadServers(data.id);
     loadActivity(data.id);
     loadActions(data.id);
+    loadLiveSessions(data.id, data);
     if (data.isOwner || data.canManageSessions){ loadSessionManagement(data.id, data); }
     if (data.isOwner){ loadRankManagement(data.id, data); }
     if (data.isOwner){ loadConnectionInfo(data.id); }
@@ -668,6 +669,133 @@
       }
       statusBox.classList.add('success');
       statusText.textContent = 'Saved!';
+    } catch(e){
+      statusBox.classList.add('error');
+      statusText.textContent = 'Network error — try again.';
+    }
+  }
+
+  // ---- Live Sessions list + Host Session ----
+
+  async function loadLiveSessions(communityId, communityData){
+    var loadingEl = document.getElementById('sessionsLoading');
+    var infoEl = document.getElementById('sessionsInfo');
+    if (!loadingEl || !infoEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/sessions', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var data = await res.json();
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+
+      if (!res.ok){
+        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(data.error || "Couldn't load sessions.") + '</div>';
+        return;
+      }
+
+      renderLiveSessions(communityId, communityData, data.sessions || []);
+    } catch(e){
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+      infoEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
+    }
+  }
+
+  function renderLiveSessions(communityId, communityData, sessions){
+    var infoEl = document.getElementById('sessionsInfo');
+    var canHost = communityData.isOwner || communityData.canManageSessions || communityData.canHostSessions;
+    var html = '';
+
+    html += '<div class="panel-card">';
+    html += '<div class="panel-card-head"><h3>Active Sessions</h3></div>';
+    if (sessions.length === 0){
+      html += '<p style="font-size:13.5px; color: var(--text-dim); margin-bottom:0;">No sessions running right now.</p>';
+    } else {
+      html += '<div class="member-list">' + sessions.map(function(s){
+        var phaseLabel = s.status === 'grading' ? 'Grading' : 'Phase ' + (s.currentPhaseIndex + 1) + '/' + s.totalPhases;
+        return '<div class="member-row"><div><b>' + escapeHtml(s.typeName) + '</b> — ' + escapeHtml(phaseLabel) +
+          '<div style="font-size:12px; color: var(--text-faint);">Hosted by ' + escapeHtml(s.hostUsername) + ' · ' + s.participantCount + ' participant' + (s.participantCount === 1 ? '' : 's') + '</div></div>' +
+          '<a href="session.html?id=' + encodeURIComponent(s.id) + '" class="btn btn-primary" style="padding:8px 14px; font-size:12.5px;">Open</a></div>';
+      }).join('') + '</div>';
+    }
+    html += '</div>';
+
+    if (canHost){
+      html +=
+        '<div class="panel-card" style="margin-bottom:0;">' +
+          '<div class="panel-card-head"><h3>Host a Session</h3></div>' +
+          '<div class="bio-username-field" id="hostTypeFieldWrap"><label for="hostSessionType">Session type</label><select id="hostSessionType" style="width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); font-family: var(--font-body); font-size:14px;"><option value="">Loading types…</option></select></div>' +
+          '<div class="bio-username-field"><label for="hostServerId">Server ID (from your game\'s Connections script, or leave blank)</label><input type="text" id="hostServerId" placeholder="e.g. a1b2c3d4-..."></div>' +
+          '<button class="btn btn-primary" id="hostCreateBtn" type="button">Create Session</button>' +
+          '<div class="verify-status" id="hostCreateStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="hostCreateStatusText"></span></div>' +
+        '</div>';
+    }
+
+    infoEl.innerHTML = html;
+
+    if (canHost){
+      populateHostSessionTypes(communityId);
+      var createBtn = document.getElementById('hostCreateBtn');
+      if (createBtn){
+        createBtn.addEventListener('click', function(){ createLiveSession(communityId, communityData); });
+      }
+    }
+  }
+
+  async function populateHostSessionTypes(communityId){
+    var select = document.getElementById('hostSessionType');
+    if (!select) return;
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-types', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var data = await res.json();
+      var types = data.sessionTypes || [];
+      if (types.length === 0){
+        select.innerHTML = '<option value="">No session types yet — create one in Session Management</option>';
+        return;
+      }
+      select.innerHTML = types.map(function(t){
+        return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + ' (' + t.phases.length + ' phases)</option>';
+      }).join('');
+    } catch(e){
+      select.innerHTML = '<option value="">Could not load session types</option>';
+    }
+  }
+
+  async function createLiveSession(communityId, communityData){
+    var typeSelect = document.getElementById('hostSessionType');
+    var serverIdInput = document.getElementById('hostServerId');
+    var statusBox = document.getElementById('hostCreateStatus');
+    var statusText = document.getElementById('hostCreateStatusText');
+
+    var sessionTypeId = typeSelect.value;
+    if (!sessionTypeId){
+      statusBox.style.display = 'flex';
+      statusBox.classList.add('error');
+      statusText.textContent = 'Choose a session type first.';
+      return;
+    }
+
+    statusBox.style.display = 'flex';
+    statusBox.classList.remove('error', 'success');
+    statusText.textContent = 'Creating…';
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+        body: JSON.stringify({ sessionTypeId: sessionTypeId, serverId: serverIdInput.value.trim() || null })
+      });
+      var data = await res.json();
+      if (!res.ok){
+        statusBox.classList.add('error');
+        statusText.textContent = data.error || 'Could not create session.';
+        return;
+      }
+      window.location.href = 'session.html?id=' + encodeURIComponent(data.id);
     } catch(e){
       statusBox.classList.add('error');
       statusText.textContent = 'Network error — try again.';
