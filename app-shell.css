@@ -1,908 +1,228 @@
-/**
- * WaveLink — Verification + Groups + Communities Worker
- * ---------------------------------------------------------------
- * WHY THIS VERSION EXISTS: Roblox's OAuth 2.0 blocks *.workers.dev as a
- * redirect_uri domain outright (confirmed by multiple developers hitting
- * the same "redirect uris are invalid" error on Roblox's own forum) —
- * fixing that would require buying a custom domain. This version avoids
- * the problem entirely by never using Roblox's OAuth redirect flow: a
- * small free Roblox game reports verification directly to this Worker
- * over a plain HTTP call, which has no domain restriction at all.
- *
- * VERIFICATION ENDPOINTS
- *   POST /api/create-session        -> { code, expiresIn }
- *     Called by login.html when the user clicks "Get Verification Code".
- *
- *   POST /api/verify                body: { code, secret, robloxUserId, username, displayName }
- *     Called ONLY by the server script inside the WaveLink Verify Roblox
- *     game (never by a player's browser). "secret" must match
- *     ROBLOX_GAME_SECRET. On success, also mints a sessionToken so the
- *     browser can call the Groups/Communities endpoints below.
- *
- *   GET  /api/status?code=XXX       -> { status: "pending" | "verified" | "expired", ...profile, sessionToken }
- *     Polled by login.html every couple seconds.
- *
- * GROUPS / COMMUNITIES (all require header: Authorization: Bearer <sessionToken>)
- *   GET  /api/groups
- *   POST /api/communities/create          body: { groupId }
- *   POST /api/communities/:id/permissions body: { editorRanks: [n, n] }
- *   (unchanged from before — see SETUP.md)
- *
- * STORAGE
- *   KV (binding SESSIONS) — codes (5 min), verified results (2 min),
- *                            session tokens (7 days).
- *   D1 (binding DB)       — communities table (see schema.sql).
- */
+/* ---- Shared: logged-in app shell (sidebar + topbar) ---- */
+body{ overflow-x: hidden; }
 
-const CODE_TTL_SECONDS = 300;
-const VERIFIED_TTL_SECONDS = 120;
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 365; // ~1 year — effectively "stay logged in" until they log out
-
-// These Roblox usernames get full owner/editor-level access to EVERY
-// community — every tab, every permission, regardless of Roblox group
-// ownership. Trusted admins only.
-const SUPER_ADMIN_USERNAMES = ["GSDobie", "eme234789"];
-
-// BETA: only these Roblox group IDs are allowed to create a community right
-// now. Super admins bypass this. Add more group IDs (or clear the array)
-// once the beta restriction is lifted.
-const BETA_ALLOWED_GROUP_IDS = ["REPLACE_WITH_COAST_BEACH_GROUP_ID"];
-
-function isSuperAdmin(session) {
-  return SUPER_ADMIN_USERNAMES.some(
-    (name) => name.toLowerCase() === (session.username || "").toLowerCase()
-  );
+.app-shell{
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
 }
 
-// ---------- small helpers ----------
-
-function corsHeaders(env) {
-  return {
-    "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  };
+.app-sidebar{
+  border-right: 1px solid var(--border);
+  background: rgba(8, 11, 18, 0.5);
+  backdrop-filter: blur(10px);
+  padding: 22px 16px;
+  display: flex;
+  flex-direction: column;
 }
 
-function json(data, status, env) {
-  return new Response(JSON.stringify(data), {
-    status: status || 200,
-    headers: { "Content-Type": "application/json", ...corsHeaders(env) },
-  });
+.sidebar-brand{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 17px;
+  padding: 4px 8px 26px;
 }
 
-function randomString(byteLength) {
-  const bytes = new Uint8Array(byteLength);
-  crypto.getRandomValues(bytes);
-  return base64url(bytes.buffer);
+.sidebar-nav{ display: flex; flex-direction: column; gap: 2px; }
+
+.sidebar-link{
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-dim);
+  transition: background 0.2s var(--ease), color 0.2s var(--ease);
+}
+.sidebar-link svg{ width: 17px; height: 17px; flex-shrink: 0; }
+.sidebar-link:hover{ background: rgba(255,255,255,0.04); color: var(--text); }
+.sidebar-link.active{
+  background: linear-gradient(135deg, rgba(63,214,255,0.14), rgba(91,127,255,0.08));
+  color: var(--accent-soft);
+  border: 1px solid rgba(63,214,255,0.18);
 }
 
-function base64url(buffer) {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
+.sidebar-foot{ margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border-soft); }
 
-function generateCode() {
-  // Avoids ambiguous characters (0/O, 1/I/L) for easy manual typing in-game
-  const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 6; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return `WL-${code}`;
-}
+.sidebar-user{ display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; }
+.sidebar-user .avatar{ width: 34px; height: 34px; }
+.sidebar-user-info{ flex: 1; min-width: 0; }
+.sidebar-user-info .name{ font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-user-info .sub{ font-family: var(--font-mono); font-size: 10.5px; color: var(--success); }
 
-function newId(prefix) {
-  return `${prefix}_${randomString(12)}`;
+.logout-btn{
+  width: 100%;
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+  color: var(--text-dim);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
 }
+.logout-btn:hover{ border-color: rgba(255,90,90,0.3); color: #ff8a8a; }
+.logout-btn svg{ width: 14px; height: 14px; }
 
-/** Reads the session token from the Authorization header and resolves it via KV. */
-async function requireSession(request, env) {
-  const authHeader = request.headers.get("Authorization") || "";
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  if (!match) return null;
-  const raw = await env.SESSIONS.get(`session:${match[1]}`);
-  if (!raw) return null;
-  return JSON.parse(raw);
+.app-main{ padding: 30px 36px 60px; min-width: 0; }
+
+.app-topbar{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 30px;
+  gap: 16px;
+  flex-wrap: wrap;
 }
+.app-topbar h1{
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+}
+.app-topbar .welcome-sub{ font-size: 14px; color: var(--text-dim); margin: 0; }
 
-async function fetchRobloxAvatar(userId) {
-  try {
-    const res = await fetch(
-      `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=false`
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data && data.data && data.data[0] ? data.data[0].imageUrl : null;
-  } catch (e) {
-    return null;
+.topbar-status{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--success);
+  padding: 7px 13px;
+  border-radius: 100px;
+  background: rgba(52,224,161,0.1);
+  border: 1px solid rgba(52,224,161,0.2);
+}
+.topbar-status .dot-pulse{ width: 6px; height: 6px; border-radius: 50%; background: var(--success); animation: pulse-ring 2s infinite; }
+
+.mobile-topbar{ display: none; }
+
+@media (max-width: 900px){
+  .app-shell{ grid-template-columns: 1fr; }
+  .app-sidebar{
+    position: fixed; inset: 0 auto 0 0; width: 240px; z-index: 150;
+    transform: translateX(-100%);
+    transition: transform 0.3s var(--ease);
+    background: rgba(6,8,14,0.98);
   }
-}
-
-// ---------- verification (game-code) ----------
-
-async function handleCreateSession(request, env) {
-  const code = generateCode();
-  await env.SESSIONS.put(
-    `code:${code}`,
-    JSON.stringify({ status: "pending", createdAt: Date.now() }),
-    { expirationTtl: CODE_TTL_SECONDS }
-  );
-  return json({ code, expiresIn: CODE_TTL_SECONDS }, 200, env);
-}
-
-async function handleVerify(request, env) {
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON body" }, 400, env); }
-
-  const { code, secret, robloxUserId, username, displayName } = body || {};
-
-  if (!secret || secret !== env.ROBLOX_GAME_SECRET) {
-    return json({ error: "unauthorized" }, 401, env);
+  .app-sidebar.open{ transform: translateX(0); }
+  .app-main{ padding: 20px 18px 50px; }
+  .mobile-topbar{
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 4px 20px;
   }
-  if (!code || !robloxUserId || !username) {
-    return json({ error: "missing required fields" }, 400, env);
+  .mobile-menu-btn{
+    width: 36px; height: 36px; border-radius: 9px;
+    border: 1px solid var(--border); background: rgba(255,255,255,0.02);
+    display: grid; place-items: center; cursor: pointer;
   }
-
-  const key = `code:${code}`;
-  const existingRaw = await env.SESSIONS.get(key);
-  if (!existingRaw) return json({ error: "invalid or expired code" }, 404, env);
-
-  const existing = JSON.parse(existingRaw);
-  if (existing.status === "verified") return json({ error: "code already used" }, 409, env);
-
-  const avatarUrl = await fetchRobloxAvatar(robloxUserId);
-  const userIdStr = String(robloxUserId);
-
-  // Mint a session token now so the browser can call Groups/Communities
-  // as soon as it picks up the verified status.
-  const sessionToken = randomString(32);
-  await env.SESSIONS.put(
-    `session:${sessionToken}`,
-    JSON.stringify({
-      robloxUserId: userIdStr, username, displayName: displayName || username, avatarUrl, createdAt: Date.now(),
-    }),
-    { expirationTtl: SESSION_TTL_SECONDS }
-  );
-
-  const verifiedRecord = {
-    status: "verified",
-    robloxUserId: userIdStr,
-    username,
-    displayName: displayName || username,
-    avatarUrl,
-    sessionToken,
-    verifiedAt: Date.now(),
-  };
-  await env.SESSIONS.put(key, JSON.stringify(verifiedRecord), { expirationTtl: VERIFIED_TTL_SECONDS });
-
-  return json({ ok: true }, 200, env);
+  .mobile-menu-btn svg{ width: 16px; height: 16px; }
+  .sidebar-scrim{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 140; }
+  .sidebar-scrim.open{ display: block; }
 }
 
-async function handleStatus(request, env) {
-  const url = new URL(request.url);
-  const code = url.searchParams.get("code");
-  if (!code) return json({ error: "missing code param" }, 400, env);
+/* ---- Shared: reusable content components (panel cards, forms, status,
+   loading/error states) used across dashboard/communities/community/session
+   pages, so any page rendering this content via JS gets consistent styling
+   without redefining it per page. ---- */
 
-  const raw = await env.SESSIONS.get(`code:${code}`);
-  if (!raw) return json({ status: "expired" }, 200, env);
+.panel-card{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(14px);
+  padding: 22px;
+  margin-bottom: 20px;
+}
+.panel-card-head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.panel-card-head h3{
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 15.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.panel-card-head h3 svg{ width: 17px; height: 17px; color: var(--accent-soft); }
 
-  return json(JSON.parse(raw), 200, env);
+.member-list{ display: flex; flex-direction: column; gap: 4px; }
+.member-row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: 10px;
+  transition: background 0.2s var(--ease);
+}
+.member-row:hover{ background: rgba(255,255,255,0.03); }
+
+.bio-username-field{ text-align: left; margin-bottom: 16px; }
+.bio-username-field label{ display: block; font-size: 12.5px; font-weight: 500; color: var(--text-dim); margin-bottom: 7px; }
+.bio-username-field input{
+  width: 100%;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+.bio-username-field input:focus{ border-color: rgba(63,214,255,0.4); }
+
+.verify-status{
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-faint);
+  margin-bottom: 18px; min-height: 18px;
+}
+.verify-status .spinner{
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.15); border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin{ to{ transform: rotate(360deg); } }
+.verify-status.success{ color: var(--success); }
+.verify-status.success .spinner{ display: none; }
+.verify-status.error{ color: #ff8a8a; }
+.verify-status.error .spinner{ display: none; }
+
+.loading-state, .error-state{ text-align: center; padding: 60px 20px; color: var(--text-dim); font-size: 14px; }
+.error-state{ color: #ff8a8a; }
+.loading-state .spinner{
+  width: 22px; height: 22px; margin: 0 auto 16px;
+  border-radius: 50%; border: 2px solid rgba(255,255,255,0.15); border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
 }
 
-// ---------- verification (profile description code) ----------
-
-async function resolveRobloxUsername(username) {
-  const res = await fetch("https://users.roblox.com/v1/usernames/users", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }),
-  });
-  if (!res.ok) throw new Error("username lookup failed");
-  const data = await res.json();
-  if (!data.data || data.data.length === 0) return null;
-  return data.data[0]; // { id, name, displayName, hasVerifiedBadge }
+.empty-tab{
+  text-align: center; padding: 60px 20px; color: var(--text-dim); font-size: 14px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); backdrop-filter: blur(14px);
 }
-
-async function fetchRobloxProfile(userId) {
-  const res = await fetch(`https://users.roblox.com/v1/users/${userId}`);
-  if (!res.ok) throw new Error("profile lookup failed");
-  return res.json(); // includes { description, ... }
+.empty-tab .tag{
+  display: inline-block; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-faint); background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
+  padding: 3px 9px; border-radius: 100px; margin-bottom: 14px;
 }
-
-async function handleBioVerifyCheck(request, env) {
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON body" }, 400, env); }
-
-  const { username, phrase } = body || {};
-  if (!username || !phrase) return json({ error: "missing username or phrase" }, 400, env);
-
-  let found;
-  try { found = await resolveRobloxUsername(username); }
-  catch (e) { return json({ error: "couldn't reach Roblox — try again shortly" }, 502, env); }
-
-  if (!found) return json({ error: "no Roblox account found with that username" }, 404, env);
-
-  let profile;
-  try { profile = await fetchRobloxProfile(found.id); }
-  catch (e) { return json({ error: "couldn't load that profile — try again shortly" }, 502, env); }
-
-  const description = profile.description || "";
-  if (!description.includes(phrase)) {
-    return json({ error: "That phrase isn't in your profile description yet. Save it on Roblox, then try again." }, 409, env);
-  }
-
-  const avatarUrl = await fetchRobloxAvatar(found.id);
-  const userIdStr = String(found.id);
-
-  // Not logged in yet — the browser still needs to show "Is this you?"
-  // before we mint a session, so just return the profile for confirmation.
-  return json({
-    robloxUserId: userIdStr,
-    username: found.name,
-    displayName: found.displayName || found.name,
-    avatarUrl,
-  }, 200, env);
-}
-
-async function handleBioVerifyConfirm(request, env) {
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON body" }, 400, env); }
-
-  const { robloxUserId, username, displayName, avatarUrl } = body || {};
-  if (!robloxUserId || !username) return json({ error: "missing profile data" }, 400, env);
-
-  const sessionToken = randomString(32);
-  await env.SESSIONS.put(
-    `session:${sessionToken}`,
-    JSON.stringify({
-      robloxUserId: String(robloxUserId), username, displayName: displayName || username,
-      avatarUrl: avatarUrl || null, createdAt: Date.now(),
-    }),
-    { expirationTtl: SESSION_TTL_SECONDS }
-  );
-
-  return json({ sessionToken }, 200, env);
-}
-
-// ---------- Roblox public API helpers (groups/communities) ----------
-
-async function fetchUserGroups(userId) {
-  const res = await fetch(`https://groups.roblox.com/v1/users/${userId}/groups/roles`);
-  if (!res.ok) throw new Error("failed to fetch user's groups");
-  const data = await res.json();
-  return data.data || [];
-}
-
-async function fetchGroupIcons(groupIds) {
-  if (groupIds.length === 0) return {};
-  const res = await fetch(
-    `https://thumbnails.roblox.com/v1/groups/icons?groupIds=${groupIds.join(",")}&size=150x150&format=Png`
-  );
-  if (!res.ok) return {};
-  const data = await res.json();
-  const map = {};
-  (data.data || []).forEach((entry) => { map[entry.targetId] = entry.imageUrl; });
-  return map;
-}
-
-async function fetchGroupDetails(groupId) {
-  const res = await fetch(`https://groups.roblox.com/v1/groups/${groupId}`);
-  if (!res.ok) throw new Error("failed to fetch group details");
-  return res.json();
-}
-
-async function fetchGroupRoles(groupId) {
-  const res = await fetch(`https://groups.roblox.com/v1/groups/${groupId}/roles`);
-  if (!res.ok) throw new Error("failed to fetch group roles");
-  const data = await res.json();
-  return data.roles || [];
-}
-
-// ---------- Groups + Communities endpoints (unchanged) ----------
-
-async function handleGroups(request, env) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  let userGroups;
-  try { userGroups = await fetchUserGroups(session.robloxUserId); }
-  catch (e) { return json({ error: "failed to fetch groups from Roblox" }, 502, env); }
-
-  const groupIds = userGroups.map((g) => String(g.group.id));
-  const icons = await fetchGroupIcons(groupIds);
-
-  let existingRows = [];
-  if (groupIds.length > 0) {
-    const placeholders = groupIds.map(() => "?").join(",");
-    const stmt = env.DB.prepare(
-      `SELECT id, roblox_group_id, group_name, group_icon_url, owner_roblox_user_id FROM communities WHERE roblox_group_id IN (${placeholders})`
-    ).bind(...groupIds);
-    const result = await stmt.all();
-    existingRows = result.results || [];
-  }
-  const communityByGroupId = {};
-  existingRows.forEach((row) => { communityByGroupId[row.roblox_group_id] = row; });
-
-  const groups = userGroups.map((g) => {
-    const groupId = String(g.group.id);
-    const existing = communityByGroupId[groupId];
-    return {
-      groupId,
-      groupName: g.group.name,
-      memberCount: g.group.memberCount,
-      iconUrl: icons[groupId] || null,
-      rank: g.role.rank,
-      roleName: g.role.name,
-      isOwner: g.role.rank === 255,
-      community: existing
-        ? { id: existing.id, name: existing.group_name, iconUrl: existing.group_icon_url }
-        : null,
-    };
-  });
-
-  return json({ groups }, 200, env);
-}
-
-async function handleGetCommunity(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const row = await env.DB.prepare(
-    `SELECT id, roblox_group_id, group_name, group_icon_url, owner_roblox_user_id, editor_ranks, created_at,
-            session_manage_ranks, session_host_ranks, session_supervise_ranks
-     FROM communities WHERE id = ?`
-  ).bind(communityId).first();
-  if (!row) return json({ error: "community not found" }, 404, env);
-
-  let groupDetails;
-  try { groupDetails = await fetchGroupDetails(row.roblox_group_id); }
-  catch (e) { return json({ error: "failed to fetch group data from Roblox" }, 502, env); }
-
-  const icons = await fetchGroupIcons([row.roblox_group_id]);
-
-  let callerRank = null;
-  let callerRoleName = null;
-  try {
-    const userGroups = await fetchUserGroups(session.robloxUserId);
-    const match = userGroups.find((g) => String(g.group.id) === row.roblox_group_id);
-    if (match) { callerRank = match.role.rank; callerRoleName = match.role.name; }
-  } catch (e) { /* if this fails, caller just won't see a rank badge */ }
-
-  const editorRanks = JSON.parse(row.editor_ranks || "[]");
-  const isOwner = row.owner_roblox_user_id === session.robloxUserId || isSuperAdmin(session);
-  const isEditor = isOwner || (callerRank !== null && editorRanks.includes(callerRank));
-
-  const manageRanks = JSON.parse(row.session_manage_ranks || "[]");
-  const hostRanks = JSON.parse(row.session_host_ranks || "[]");
-  const superviseRanks = JSON.parse(row.session_supervise_ranks || "[]");
-  const canManageSessions = isOwner || (callerRank !== null && manageRanks.includes(callerRank));
-  const canHostSessions = isOwner || canManageSessions || (callerRank !== null && hostRanks.includes(callerRank));
-  const canSuperviseSessions = isOwner || canManageSessions || (callerRank !== null && superviseRanks.includes(callerRank));
-
-  let groupRoles = null;
-  if (isOwner) {
-    try {
-      const roles = await fetchGroupRoles(row.roblox_group_id);
-      groupRoles = roles.filter((r) => r.rank < 255).map((r) => ({ rank: r.rank, name: r.name }));
-    } catch (e) { groupRoles = []; }
-  }
-
-  return json({
-    id: row.id,
-    groupId: row.roblox_group_id,
-    groupName: groupDetails.name || row.group_name,
-    memberCount: groupDetails.memberCount || null,
-    iconUrl: icons[row.roblox_group_id] || row.group_icon_url || null,
-    ownerRobloxUserId: row.owner_roblox_user_id,
-    editorRanks,
-    callerRank,
-    callerRoleName,
-    isOwner,
-    isEditor,
-    manageRanks,
-    hostRanks,
-    superviseRanks,
-    canManageSessions,
-    canHostSessions,
-    canSuperviseSessions,
-    groupRoles,
-  }, 200, env);
-}
-
-async function handleCreateCommunity(request, env) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON" }, 400, env); }
-  const groupId = body && body.groupId ? String(body.groupId) : null;
-  if (!groupId) return json({ error: "missing groupId" }, 400, env);
-
-  const existing = await env.DB.prepare(
-    "SELECT id FROM communities WHERE roblox_group_id = ?"
-  ).bind(groupId).first();
-  if (existing) return json({ error: "a community already exists for this group" }, 409, env);
-
-  let groupDetails, roles;
-  try {
-    groupDetails = await fetchGroupDetails(groupId);
-    roles = await fetchGroupRoles(groupId);
-  } catch (e) {
-    return json({ error: "failed to fetch group data from Roblox" }, 502, env);
-  }
-
-  const ownerUserId = groupDetails.owner && String(groupDetails.owner.userId);
-  console.log("[WaveLink debug] groupDetails.owner =", JSON.stringify(groupDetails.owner));
-  console.log("[WaveLink debug] computed ownerUserId =", ownerUserId);
-  console.log("[WaveLink debug] session.robloxUserId =", session.robloxUserId, typeof session.robloxUserId);
-
-  if (!isSuperAdmin(session) && !BETA_ALLOWED_GROUP_IDS.includes(groupId)) {
-    return json({ error: "WaveLink is currently in beta and only available to select communities." }, 403, env);
-  }
-
-  // The community is still recorded as owned by the group's REAL Roblox
-  // owner, not a super admin who triggered creation on someone else's behalf.
-  if (!isSuperAdmin(session) && (!ownerUserId || ownerUserId !== session.robloxUserId)) {
-    return json({ error: "only the group owner can create a community for this group" }, 403, env);
-  }
-
-  const icons = await fetchGroupIcons([groupId]);
-
-  const editorRanks = roles
-    .filter((r) => r.rank < 255)
-    .sort((a, b) => b.rank - a.rank)
-    .slice(0, 2)
-    .map((r) => r.rank);
-
-  // If Roblox genuinely has no owner on file for this group (rare, but the
-  // debug logs above will show it), fall back to the creating admin's ID so
-  // the record always has a valid, non-null owner.
-  const finalOwnerUserId = ownerUserId || session.robloxUserId;
-
-  const id = newId("com");
-  const connectionSecret = randomString(24);
-  await env.DB.prepare(
-    `INSERT INTO communities (id, roblox_group_id, group_name, group_icon_url, owner_roblox_user_id, editor_ranks, created_at, connection_secret)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, groupId, groupDetails.name, icons[groupId] || null, finalOwnerUserId, JSON.stringify(editorRanks), Date.now(), connectionSecret).run();
-
-  return json({ id, groupId, name: groupDetails.name, iconUrl: icons[groupId] || null, editorRanks }, 201, env);
-}
-
-// ---------- Connections (Roblox game bridge) ----------
-
-const SERVER_HEARTBEAT_TTL_SECONDS = 90; // a server is "live" if it's heartbeated in the last 90s
-const PLAYTIME_MAX_INCREMENT_SECONDS = 60; // cap per-heartbeat gain so a long gap (e.g. server was down) doesn't overcount
-
-async function accumulatePlaytime(env, communityId, players) {
-  const now = Date.now();
-  for (const p of players) {
-    if (!p || p.userId == null) continue;
-    const userId = String(p.userId);
-
-    const existing = await env.DB.prepare(
-      "SELECT total_seconds, last_heartbeat_at FROM player_playtime WHERE community_id = ? AND roblox_user_id = ?"
-    ).bind(communityId, userId).first();
-
-    if (existing) {
-      const elapsedSeconds = existing.last_heartbeat_at
-        ? Math.min((now - existing.last_heartbeat_at) / 1000, PLAYTIME_MAX_INCREMENT_SECONDS)
-        : 0;
-      await env.DB.prepare(
-        "UPDATE player_playtime SET total_seconds = total_seconds + ?, last_heartbeat_at = ? WHERE community_id = ? AND roblox_user_id = ?"
-      ).bind(Math.max(0, Math.round(elapsedSeconds)), now, communityId, userId).run();
-    } else {
-      await env.DB.prepare(
-        "INSERT INTO player_playtime (community_id, roblox_user_id, total_seconds, last_heartbeat_at) VALUES (?, ?, 0, ?)"
-      ).bind(communityId, userId, now).run();
-    }
-  }
-}
-
-async function handleConnectionHeartbeat(request, env) {
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON body" }, 400, env); }
-
-  const { connectionSecret, serverId, placeId, players } = body || {};
-  if (!connectionSecret || !serverId) return json({ error: "missing connectionSecret or serverId" }, 400, env);
-
-  const row = await env.DB.prepare(
-    "SELECT id FROM communities WHERE connection_secret = ?"
-  ).bind(connectionSecret).first();
-  if (!row) return json({ error: "unauthorized" }, 401, env);
-
-  const record = {
-    placeId: placeId || null,
-    players: Array.isArray(players) ? players.slice(0, 200) : [],
-    playerCount: Array.isArray(players) ? players.length : 0,
-    lastSeen: Date.now(),
-  };
-
-  await env.SESSIONS.put(
-    `server:${row.id}:${serverId}`,
-    JSON.stringify(record),
-    { expirationTtl: SERVER_HEARTBEAT_TTL_SECONDS }
-  );
-
-  if (Array.isArray(players) && players.length > 0) {
-    await accumulatePlaytime(env, row.id, players);
-  }
-
-  return json({ ok: true }, 200, env);
-}
-
-async function handleGetServers(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const list = await env.SESSIONS.list({ prefix: `server:${communityId}:` });
-  const servers = [];
-  for (const key of list.keys) {
-    const raw = await env.SESSIONS.get(key.name);
-    if (!raw) continue;
-    const data = JSON.parse(raw);
-    const serverId = key.name.split(":").slice(2).join(":");
-    servers.push({ serverId, placeId: data.placeId, playerCount: data.playerCount, players: data.players, lastSeen: data.lastSeen });
-  }
-  servers.sort((a, b) => b.playerCount - a.playerCount);
-
-  return json({ servers }, 200, env);
-}
-
-// ---------- shared: resolve caller's access level for a community ----------
-
-async function resolveCallerAccess(env, session, communityId) {
-  const row = await env.DB.prepare(
-    "SELECT id, roblox_group_id, owner_roblox_user_id, editor_ranks FROM communities WHERE id = ?"
-  ).bind(communityId).first();
-  if (!row) return null;
-
-  let callerRank = null;
-  try {
-    const userGroups = await fetchUserGroups(session.robloxUserId);
-    const match = userGroups.find((g) => String(g.group.id) === row.roblox_group_id);
-    if (match) callerRank = match.role.rank;
-  } catch (e) { /* leave callerRank null on failure */ }
-
-  const editorRanks = JSON.parse(row.editor_ranks || "[]");
-  const isOwner = row.owner_roblox_user_id === session.robloxUserId || isSuperAdmin(session);
-  const isEditor = isOwner || (callerRank !== null && editorRanks.includes(callerRank));
-
-  return { row, isOwner, isEditor };
-}
-
-// ---------- Actions (personal) + Moderation (editor-only) ----------
-
-async function handleGetActions(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const result = await env.DB.prepare(
-    `SELECT id, type, reason, created_at, revoked, revoked_at FROM moderation_actions
-     WHERE community_id = ? AND target_roblox_user_id = ? ORDER BY created_at DESC`
-  ).bind(communityId, session.robloxUserId).all();
-
-  const actions = (result.results || []).map((r) => ({
-    id: r.id, type: r.type, reason: r.reason, createdAt: r.created_at,
-    revoked: !!r.revoked, revokedAt: r.revoked_at,
-  }));
-
-  const isBanned = actions.some((a) => a.type === "ban" && !a.revoked);
-
-  return json({ actions, isBanned }, 200, env);
-}
-
-async function handleGetModerationLog(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const access = await resolveCallerAccess(env, session, communityId);
-  if (!access) return json({ error: "community not found" }, 404, env);
-  if (!access.isEditor) return json({ error: "you don't have moderation access for this community" }, 403, env);
-
-  const result = await env.DB.prepare(
-    `SELECT id, target_roblox_user_id, target_username, type, reason, issued_by_username, created_at, revoked, revoked_at
-     FROM moderation_actions WHERE community_id = ? ORDER BY created_at DESC LIMIT 100`
-  ).bind(communityId).all();
-
-  const actions = (result.results || []).map((r) => ({
-    id: r.id, targetUserId: r.target_roblox_user_id, targetUsername: r.target_username,
-    type: r.type, reason: r.reason, issuedByUsername: r.issued_by_username,
-    createdAt: r.created_at, revoked: !!r.revoked, revokedAt: r.revoked_at,
-  }));
-
-  return json({ actions }, 200, env);
-}
-
-async function handleIssueModeration(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const access = await resolveCallerAccess(env, session, communityId);
-  if (!access) return json({ error: "community not found" }, 404, env);
-  if (!access.isEditor) return json({ error: "you don't have moderation access for this community" }, 403, env);
-
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON" }, 400, env); }
-  const { targetUsername, type, reason } = body || {};
-  if (!targetUsername || !reason) return json({ error: "missing targetUsername or reason" }, 400, env);
-  if (type !== "warning" && type !== "ban") return json({ error: "type must be 'warning' or 'ban'" }, 400, env);
-
-  let found;
-  try { found = await resolveRobloxUsername(targetUsername); }
-  catch (e) { return json({ error: "couldn't reach Roblox — try again shortly" }, 502, env); }
-  if (!found) return json({ error: "no Roblox account found with that username" }, 404, env);
-
-  const id = newId("mod");
-  await env.DB.prepare(
-    `INSERT INTO moderation_actions
-     (id, community_id, target_roblox_user_id, target_username, type, reason, issued_by_roblox_user_id, issued_by_username, created_at, revoked)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
-  ).bind(id, communityId, String(found.id), found.name, type, reason, session.robloxUserId, session.username, Date.now()).run();
-
-  return json({ id, targetUsername: found.name, type, reason }, 201, env);
-}
-
-async function handleRevokeModeration(request, env, communityId, actionId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const access = await resolveCallerAccess(env, session, communityId);
-  if (!access) return json({ error: "community not found" }, 404, env);
-  if (!access.isEditor) return json({ error: "you don't have moderation access for this community" }, 403, env);
-
-  const row = await env.DB.prepare(
-    "SELECT id FROM moderation_actions WHERE id = ? AND community_id = ?"
-  ).bind(actionId, communityId).first();
-  if (!row) return json({ error: "action not found" }, 404, env);
-
-  await env.DB.prepare(
-    "UPDATE moderation_actions SET revoked = 1, revoked_at = ? WHERE id = ?"
-  ).bind(Date.now(), actionId).run();
-
-  return json({ ok: true }, 200, env);
-}
-
-async function handleGetActivity(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const row = await env.DB.prepare(
-    "SELECT total_seconds FROM player_playtime WHERE community_id = ? AND roblox_user_id = ?"
-  ).bind(communityId, session.robloxUserId).first();
-
-  return json({ totalSeconds: row ? row.total_seconds : 0 }, 200, env);
-}
-
-async function handleGetConnectionInfo(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const row = await env.DB.prepare(
-    "SELECT owner_roblox_user_id, connection_secret FROM communities WHERE id = ?"
-  ).bind(communityId).first();
-  if (!row) return json({ error: "community not found" }, 404, env);
-
-  if (row.owner_roblox_user_id !== session.robloxUserId && !isSuperAdmin(session)) {
-    return json({ error: "only the community owner can view connection setup" }, 403, env);
-  }
-
-  return json({ connectionSecret: row.connection_secret }, 200, env);
-}
-
-async function handleUpdatePermissions(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON" }, 400, env); }
-  const editorRanks = Array.isArray(body && body.editorRanks) ? body.editorRanks.map(Number) : null;
-  if (!editorRanks) return json({ error: "missing editorRanks array" }, 400, env);
-
-  const row = await env.DB.prepare(
-    "SELECT owner_roblox_user_id FROM communities WHERE id = ?"
-  ).bind(communityId).first();
-  if (!row) return json({ error: "community not found" }, 404, env);
-
-  if (row.owner_roblox_user_id !== session.robloxUserId && !isSuperAdmin(session)) {
-    return json({ error: "only the community owner can change editor ranks" }, 403, env);
-  }
-
-  await env.DB.prepare("UPDATE communities SET editor_ranks = ? WHERE id = ?")
-    .bind(JSON.stringify(editorRanks), communityId).run();
-
-  return json({ id: communityId, editorRanks }, 200, env);
-}
-
-// ---------- Sessions: permissions + type/phase designer ----------
-
-async function requireOwner(env, session, communityId) {
-  const row = await env.DB.prepare(
-    "SELECT owner_roblox_user_id FROM communities WHERE id = ?"
-  ).bind(communityId).first();
-  if (!row) return { error: json({ error: "community not found" }, 404, env) };
-  if (row.owner_roblox_user_id !== session.robloxUserId && !isSuperAdmin(session)) {
-    return { error: json({ error: "only the community owner can do this" }, 403, env) };
-  }
-  return { row };
-}
-
-async function handleUpdateSessionPermissions(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const ownerCheck = await requireOwner(env, session, communityId);
-  if (ownerCheck.error) return ownerCheck.error;
-
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON" }, 400, env); }
-  const manageRanks = Array.isArray(body && body.manageRanks) ? body.manageRanks.map(Number) : [];
-  const hostRanks = Array.isArray(body && body.hostRanks) ? body.hostRanks.map(Number) : [];
-  const superviseRanks = Array.isArray(body && body.superviseRanks) ? body.superviseRanks.map(Number) : [];
-
-  await env.DB.prepare(
-    "UPDATE communities SET session_manage_ranks = ?, session_host_ranks = ?, session_supervise_ranks = ? WHERE id = ?"
-  ).bind(JSON.stringify(manageRanks), JSON.stringify(hostRanks), JSON.stringify(superviseRanks), communityId).run();
-
-  return json({ manageRanks, hostRanks, superviseRanks }, 200, env);
-}
-
-async function requireSessionManagePerm(env, session, communityId) {
-  const access = await resolveCallerAccess(env, session, communityId);
-  if (!access) return { error: json({ error: "community not found" }, 404, env) };
-
-  const row = await env.DB.prepare(
-    "SELECT session_manage_ranks FROM communities WHERE id = ?"
-  ).bind(communityId).first();
-  const manageRanks = JSON.parse((row && row.session_manage_ranks) || "[]");
-
-  let callerRank = null;
-  try {
-    const userGroups = await fetchUserGroups(session.robloxUserId);
-    const match = userGroups.find((g) => String(g.group.id) === access.row.roblox_group_id);
-    if (match) callerRank = match.role.rank;
-  } catch (e) { /* leave null */ }
-
-  const canManage = access.isOwner || (callerRank !== null && manageRanks.includes(callerRank));
-  if (!canManage) return { error: json({ error: "you don't have session management access for this community" }, 403, env) };
-  return { access };
-}
-
-async function handleListSessionTypes(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const types = await env.DB.prepare(
-    "SELECT id, name, sort_order FROM session_types WHERE community_id = ? ORDER BY sort_order ASC"
-  ).bind(communityId).all();
-
-  const result = [];
-  for (const t of (types.results || [])) {
-    const phases = await env.DB.prepare(
-      "SELECT id, name, sort_order FROM session_phases WHERE session_type_id = ? ORDER BY sort_order ASC"
-    ).bind(t.id).all();
-    result.push({
-      id: t.id, name: t.name,
-      phases: (phases.results || []).map((p) => ({ id: p.id, name: p.name })),
-    });
-  }
-
-  return json({ sessionTypes: result }, 200, env);
-}
-
-async function handleCreateSessionType(request, env, communityId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const manageCheck = await requireSessionManagePerm(env, session, communityId);
-  if (manageCheck.error) return manageCheck.error;
-
-  let body;
-  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON" }, 400, env); }
-  const name = body && body.name && String(body.name).trim();
-  const phaseNames = Array.isArray(body && body.phaseNames) ? body.phaseNames.map(String) : [];
-  if (!name) return json({ error: "missing session type name" }, 400, env);
-  if (phaseNames.length === 0) return json({ error: "add at least one phase" }, 400, env);
-  if (phaseNames.length > 10) return json({ error: "a session type can have at most 10 phases" }, 400, env);
-
-  const countRow = await env.DB.prepare(
-    "SELECT COUNT(*) as count FROM session_types WHERE community_id = ?"
-  ).bind(communityId).first();
-  if (countRow && countRow.count >= 10) {
-    return json({ error: "this community already has the maximum of 10 session types" }, 409, env);
-  }
-
-  const typeId = newId("stype");
-  await env.DB.prepare(
-    "INSERT INTO session_types (id, community_id, name, sort_order, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).bind(typeId, communityId, name, countRow ? countRow.count : 0, Date.now()).run();
-
-  for (let i = 0; i < phaseNames.length; i++) {
-    await env.DB.prepare(
-      "INSERT INTO session_phases (id, session_type_id, name, sort_order) VALUES (?, ?, ?, ?)"
-    ).bind(newId("sphase"), typeId, phaseNames[i], i).run();
-  }
-
-  return json({ id: typeId, name, phaseNames }, 201, env);
-}
-
-async function handleDeleteSessionType(request, env, communityId, typeId) {
-  const session = await requireSession(request, env);
-  if (!session) return json({ error: "unauthorized" }, 401, env);
-
-  const manageCheck = await requireSessionManagePerm(env, session, communityId);
-  if (manageCheck.error) return manageCheck.error;
-
-  const row = await env.DB.prepare(
-    "SELECT id FROM session_types WHERE id = ? AND community_id = ?"
-  ).bind(typeId, communityId).first();
-  if (!row) return json({ error: "session type not found" }, 404, env);
-
-  await env.DB.prepare("DELETE FROM session_phases WHERE session_type_id = ?").bind(typeId).run();
-  await env.DB.prepare("DELETE FROM session_types WHERE id = ?").bind(typeId).run();
-
-  return json({ ok: true }, 200, env);
-}
-
-// ---------- router ----------
-
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders(env) });
-    }
-
-    if (url.pathname === "/api/create-session" && request.method === "POST") return handleCreateSession(request, env);
-    if (url.pathname === "/api/verify" && request.method === "POST") return handleVerify(request, env);
-    if (url.pathname === "/api/status" && request.method === "GET") return handleStatus(request, env);
-    if (url.pathname === "/api/bio-verify/check" && request.method === "POST") return handleBioVerifyCheck(request, env);
-    if (url.pathname === "/api/bio-verify/confirm" && request.method === "POST") return handleBioVerifyConfirm(request, env);
-
-    if (url.pathname === "/api/groups" && request.method === "GET") return handleGroups(request, env);
-    if (url.pathname === "/api/communities/create" && request.method === "POST") return handleCreateCommunity(request, env);
-
-    const permMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/permissions$/);
-    if (permMatch && request.method === "POST") return handleUpdatePermissions(request, env, permMatch[1]);
-
-    if (url.pathname === "/api/connections/heartbeat" && request.method === "POST") return handleConnectionHeartbeat(request, env);
-
-    const serversMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/servers$/);
-    if (serversMatch && request.method === "GET") return handleGetServers(request, env, serversMatch[1]);
-
-    const connectionInfoMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/connection-info$/);
-    if (connectionInfoMatch && request.method === "GET") return handleGetConnectionInfo(request, env, connectionInfoMatch[1]);
-
-    const activityMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/activity$/);
-    if (activityMatch && request.method === "GET") return handleGetActivity(request, env, activityMatch[1]);
-
-    const actionsMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/actions$/);
-    if (actionsMatch && request.method === "GET") return handleGetActions(request, env, actionsMatch[1]);
-
-    const modLogMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/moderation\/log$/);
-    if (modLogMatch && request.method === "GET") return handleGetModerationLog(request, env, modLogMatch[1]);
-
-    const modIssueMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/moderation\/issue$/);
-    if (modIssueMatch && request.method === "POST") return handleIssueModeration(request, env, modIssueMatch[1]);
-
-    const modRevokeMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/moderation\/([^/]+)\/revoke$/);
-    if (modRevokeMatch && request.method === "POST") return handleRevokeModeration(request, env, modRevokeMatch[1], modRevokeMatch[2]);
-
-    const sessPermMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/session-permissions$/);
-    if (sessPermMatch && request.method === "POST") return handleUpdateSessionPermissions(request, env, sessPermMatch[1]);
-
-    const sessTypesMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/session-types$/);
-    if (sessTypesMatch && request.method === "GET") return handleListSessionTypes(request, env, sessTypesMatch[1]);
-    if (sessTypesMatch && request.method === "POST") return handleCreateSessionType(request, env, sessTypesMatch[1]);
-
-    const sessTypeDeleteMatch = url.pathname.match(/^\/api\/communities\/([^/]+)\/session-types\/([^/]+)$/);
-    if (sessTypeDeleteMatch && request.method === "DELETE") return handleDeleteSessionType(request, env, sessTypeDeleteMatch[1], sessTypeDeleteMatch[2]);
-
-    const communityMatch = url.pathname.match(/^\/api\/communities\/([^/]+)$/);
-    if (communityMatch && request.method === "GET") return handleGetCommunity(request, env, communityMatch[1]);
-
-    return json({ error: "not found" }, 404, env);
-  },
-};
