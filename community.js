@@ -51,6 +51,7 @@
     { key: 'session-management', label: 'Session Management', manageOnly: true },
     { key: 'rank-management', label: 'Rank Management', ownerOnly: true },
     { key: 'connections', label: 'Connections', ownerOnly: true },
+    { key: 'session-logs', label: 'Session Logs', logsOnly: true },
     { key: 'moderation', label: 'Moderation', editorOnly: true }
   ];
 
@@ -74,6 +75,7 @@
       if (t.ownerOnly && !data.isOwner) return false;
       if (t.editorOnly && !data.isEditor) return false;
       if (t.manageOnly && !(data.isOwner || data.canManageSessions)) return false;
+      if (t.logsOnly && !data.canViewSessionLogs) return false;
       return true;
     });
 
@@ -104,6 +106,8 @@
         inner = '<div class="loading-state" id="rankMgmtLoading"><div class="spinner" aria-hidden="true"></div>Loading rank permissions…</div><div id="rankMgmtInfo" hidden></div>';
       } else if (t.key === 'connections'){
         inner = '<div class="loading-state" id="connectionsLoading"><div class="spinner" aria-hidden="true"></div>Loading setup info…</div><div id="connectionsInfo" hidden></div>';
+      } else if (t.key === 'session-logs'){
+        inner = '<div class="loading-state" id="sessionLogsLoading"><div class="spinner" aria-hidden="true"></div>Loading session logs…</div><div id="sessionLogsInfo" hidden></div>';
       } else if (t.key === 'moderation'){
         inner =
           '<div class="panel-card">' +
@@ -169,6 +173,7 @@
     if (data.isOwner){ loadRankManagement(data.id, data); }
     if (data.isOwner){ loadConnectionInfo(data.id); }
     if (data.isEditor){ loadModerationLog(data.id); wireModerationForm(data.id); }
+    if (data.canViewSessionLogs){ loadSessionLogs(data.id); }
   }
 
   function formatDuration(totalSeconds){
@@ -622,6 +627,7 @@
           '<div><b style="font-size:12.5px; color: var(--text);">Can Manage Sessions</b><div style="margin-top:8px;">' + checkboxGroup('manage', communityData.manageRanks || []) + '</div></div>' +
           '<div><b style="font-size:12.5px; color: var(--text);">Can Host Sessions</b><div style="margin-top:8px;">' + checkboxGroup('host', communityData.hostRanks || []) + '</div></div>' +
           '<div><b style="font-size:12.5px; color: var(--text);">Can Supervise Sessions</b><div style="margin-top:8px;">' + checkboxGroup('supervise', communityData.superviseRanks || []) + '</div></div>' +
+          '<div><b style="font-size:12.5px; color: var(--text);">Session Logs Access</b><div style="margin-top:8px;">' + checkboxGroup('logs', communityData.logsRanks || []) + '</div></div>' +
         '</div>' +
         '<button class="btn btn-primary" id="saveRankMgmtBtn" type="button">Save All Permissions</button>' +
         '<div class="verify-status" id="rankMgmtStatus" style="display:none; margin-top:10px;"><span class="spinner" aria-hidden="true"></span><span id="rankMgmtStatusText"></span></div>' +
@@ -657,7 +663,7 @@
         fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-permissions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
-          body: JSON.stringify({ manageRanks: collect('manage'), hostRanks: collect('host'), superviseRanks: collect('supervise') })
+          body: JSON.stringify({ manageRanks: collect('manage'), hostRanks: collect('host'), superviseRanks: collect('supervise'), logsRanks: collect('logs') })
         })
       ]);
 
@@ -709,23 +715,28 @@
     var html = '';
 
     html += '<div class="panel-card">';
-    html += '<div class="panel-card-head"><h3>Active Sessions</h3></div>';
+    html += '<div class="panel-card-head"><h3>Active Sessions</h3>' +
+      (canHost ? '<button class="btn btn-primary" id="hostSessionPlusBtn" type="button" style="padding:8px 14px; font-size:13px; display:flex; align-items:center; gap:6px;"><svg viewBox="0 0 24 24" fill="none" style="width:15px;height:15px;"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>Host Session</button>' : '') +
+      '</div>';
     if (sessions.length === 0){
       html += '<p style="font-size:13.5px; color: var(--text-dim); margin-bottom:0;">No sessions running right now.</p>';
     } else {
       html += '<div class="member-list">' + sessions.map(function(s){
         var phaseLabel = s.status === 'grading' ? 'Grading' : 'Phase ' + (s.currentPhaseIndex + 1) + '/' + s.totalPhases;
+        var manageBtn = s.viewerIsStaff
+          ? '<a href="session.html?id=' + encodeURIComponent(s.id) + '" class="btn btn-ghost" style="padding:8px 14px; font-size:12.5px;">Manage Session</a>'
+          : '';
         return '<div class="member-row"><div><b>' + escapeHtml(s.typeName) + '</b> — ' + escapeHtml(phaseLabel) +
           '<div style="font-size:12px; color: var(--text-faint);">Hosted by ' + escapeHtml(s.hostUsername) + ' · ' + s.participantCount + ' participant' + (s.participantCount === 1 ? '' : 's') + '</div></div>' +
-          '<a href="session.html?id=' + encodeURIComponent(s.id) + '" class="btn btn-primary" style="padding:8px 14px; font-size:12.5px;">Open</a></div>';
+          '<div style="display:flex; gap:8px;"><a href="session.html?id=' + encodeURIComponent(s.id) + '" class="btn btn-primary" style="padding:8px 14px; font-size:12.5px;">Join</a>' + manageBtn + '</div></div>';
       }).join('') + '</div>';
     }
     html += '</div>';
 
     if (canHost){
       html +=
-        '<div class="panel-card" style="margin-bottom:0;">' +
-          '<div class="panel-card-head"><h3>Host a Session</h3></div>' +
+        '<div class="panel-card" style="margin-bottom:0; display:none;" id="hostSessionForm">' +
+          '<div class="panel-card-head"><h3>Session Administration</h3></div>' +
           '<div class="bio-username-field" id="hostTypeFieldWrap"><label for="hostSessionType">Session type</label><select id="hostSessionType" style="width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); font-family: var(--font-body); font-size:14px;"><option value="">Loading types…</option></select></div>' +
           '<div class="bio-username-field"><label for="hostServerId">Server ID (from your game\'s Connections script, or leave blank)</label><input type="text" id="hostServerId" placeholder="e.g. a1b2c3d4-..."></div>' +
           '<button class="btn btn-primary" id="hostCreateBtn" type="button">Create Session</button>' +
@@ -740,6 +751,13 @@
       var createBtn = document.getElementById('hostCreateBtn');
       if (createBtn){
         createBtn.addEventListener('click', function(){ createLiveSession(communityId, communityData); });
+      }
+      var plusBtn = document.getElementById('hostSessionPlusBtn');
+      var form = document.getElementById('hostSessionForm');
+      if (plusBtn && form){
+        plusBtn.addEventListener('click', function(){
+          form.style.display = form.style.display === 'none' ? 'block' : 'none';
+        });
       }
     }
   }
@@ -799,6 +817,48 @@
     } catch(e){
       statusBox.classList.add('error');
       statusText.textContent = 'Network error — try again.';
+    }
+  }
+
+  async function loadSessionLogs(communityId){
+    var loadingEl = document.getElementById('sessionLogsLoading');
+    var infoEl = document.getElementById('sessionLogsInfo');
+    if (!loadingEl || !infoEl) return;
+
+    try{
+      var res = await fetch(WORKER_URL + '/api/communities/' + encodeURIComponent(communityId) + '/session-logs', {
+        headers: { 'Authorization': 'Bearer ' + session.sessionToken }
+      });
+      var data = await res.json();
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+
+      if (!res.ok){
+        infoEl.innerHTML = '<div class="error-state">' + escapeHtml(data.error || "Couldn't load session logs.") + '</div>';
+        return;
+      }
+
+      var logs = data.logs || [];
+      if (logs.length === 0){
+        infoEl.innerHTML = emptyTabHtml('No logs yet', 'Grades, promotions, and warnings from sessions will appear here.');
+        return;
+      }
+
+      infoEl.innerHTML = '<div class="panel-card"><div class="panel-card-head"><h3>Session Logs</h3></div><div class="member-list">' +
+        logs.map(function(l){
+          var bits = [];
+          if (l.grade) bits.push('Graded ' + l.grade + '/10' + (l.gradeNotes ? ' — ' + escapeHtml(l.gradeNotes) : ''));
+          if (l.promoted) bits.push('Promoted' + (l.promotedToRank != null ? ' to rank ' + l.promotedToRank : ''));
+          if (l.warnings > 0) bits.push(l.warnings + ' warning' + (l.warnings === 1 ? '' : 's'));
+          if (l.exceptional) bits.push('Exceptional');
+          return '<div class="member-row"><div><b>' + escapeHtml(l.username) + '</b> (' + escapeHtml(l.role) + ') — ' + bits.join(' · ') +
+            '<div style="font-size:11px; color: var(--text-faint);">' + escapeHtml(l.sessionType) + ' · ' + new Date(l.sessionDate).toLocaleDateString() + '</div></div></div>';
+        }).join('') +
+      '</div></div>';
+    } catch(e){
+      loadingEl.hidden = true;
+      infoEl.hidden = false;
+      infoEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
     }
   }
 
