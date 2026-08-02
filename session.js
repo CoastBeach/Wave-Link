@@ -69,11 +69,18 @@
       return '<button class="community-tab' + (t.key === activeInnerTab ? ' active' : '') + '" data-inner-tab="' + t.key + '">' + escapeHtml(t.label) + '</button>';
     }).join('');
 
+    var groupIconHtml = data.groupIconUrl
+      ? '<img src="' + escapeHtml(data.groupIconUrl) + '" alt="" style="width:48px;height:48px;border-radius:12px;object-fit:cover;border:1px solid var(--border-soft);flex-shrink:0;">'
+      : '';
+
     container.innerHTML =
-      '<div class="session-hero">' +
-        '<h1>' + escapeHtml(data.typeName) + '</h1>' +
-        '<div class="meta">Hosted by ' + escapeHtml(data.hostUsername) + ' · Status: ' + escapeHtml(statusLabel) + (data.serverId ? ' · Server: ' + escapeHtml(data.serverId.slice(0, 12)) + '…' : '') + '</div>' +
-        '<div class="phase-track">' + phaseTrackHtml + '</div>' +
+      '<div class="session-hero" style="display:flex; align-items:flex-start; gap:16px;">' +
+        groupIconHtml +
+        '<div style="flex:1;">' +
+          '<h1>' + escapeHtml(data.typeName) + '</h1>' +
+          '<div class="meta">Hosted by ' + escapeHtml(data.hostUsername) + ' · Status: ' + escapeHtml(statusLabel) + (data.serverId ? ' · Server: ' + escapeHtml(data.serverId.slice(0, 12)) + '…' : '') + '</div>' +
+          '<div class="phase-track">' + phaseTrackHtml + '</div>' +
+        '</div>' +
       '</div>' +
       (innerTabs.length > 1 ? '<div class="community-tabs">' + tabsHtml + '</div>' : '') +
       '<div id="innerTabContent"></div>';
@@ -101,23 +108,39 @@
   // ---------- Main tab: phase running ----------
 
   function renderMainTab(contentEl, data){
+    var canEdit = data.canManageSession && data.status === 'active';
+
+    var headerCells = data.phaseNames.map(function(name, i){
+      return '<span class="grid-phase-head" title="' + escapeHtml(name) + '">P' + (i + 1) + '</span>';
+    }).join('');
+
     var rows = data.participants.length === 0
       ? '<p style="font-size:13.5px; color: var(--text-dim);">No participants added yet — add some from Manage Attendees.</p>'
       : data.participants.map(function(p){
-          var statusControls = '';
-          if (data.canManageSession && data.status === 'active'){
-            statusControls =
-              '<label class="pass-check"><input type="radio" name="phase-' + escapeHtml(p.id) + '" data-phase-status="' + escapeHtml(p.id) + '" value="none" ' + (p.currentPhaseStatus === 'none' ? 'checked' : '') + '> —</label>' +
-              '<label class="pass-check" style="margin-left:10px;"><input type="radio" name="phase-' + escapeHtml(p.id) + '" data-phase-status="' + escapeHtml(p.id) + '" value="passed" ' + (p.currentPhaseStatus === 'passed' ? 'checked' : '') + '> Passed</label>' +
-              '<label class="pass-check" style="margin-left:10px;"><input type="radio" name="phase-' + escapeHtml(p.id) + '" data-phase-status="' + escapeHtml(p.id) + '" value="exceptional" ' + (p.currentPhaseStatus === 'exceptional' ? 'checked' : '') + '> Exceptional</label>' +
-              '<button class="btn btn-ghost" data-warn="' + escapeHtml(p.id) + '" style="margin-left:12px; padding:4px 10px; font-size:11px;">Add Warning</button>';
-          } else {
-            statusControls = '<span style="font-size:12px; color: var(--text-faint);">' + p.phasesPassed + '/' + data.totalPhases + ' passed' + (p.warnings > 0 ? ' · ' + p.warnings + ' warning' + (p.warnings === 1 ? '' : 's') : '') + (p.exceptional ? ' · Exceptional' : '') + '</span>';
-          }
-          return '<div class="participant-row">' +
-            '<span class="name">' + escapeHtml(p.username) + '<span class="role-tag">' + escapeHtml(p.role) + '</span></span>' +
-            '<span class="spacer"></span>' +
-            statusControls +
+          var avatarHtml = p.avatarUrl
+            ? '<img src="' + escapeHtml(p.avatarUrl) + '" alt="" class="grid-avatar">'
+            : '<div class="grid-avatar" style="display:grid; place-items:center; background: rgba(255,255,255,0.04);"><svg viewBox="0 0 24 24" fill="none" style="width:14px;height:14px;"><rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.8"/></svg></div>';
+
+          var phaseChecks = p.phaseStatuses.map(function(st, i){
+            var disabled = canEdit ? '' : 'disabled';
+            return '<input type="checkbox" class="grid-check" data-phase-check="' + escapeHtml(p.id) + '" data-phase-index="' + i + '" ' + (st === 'passed' ? 'checked' : '') + ' ' + disabled + '>';
+          }).join('');
+
+          var warnBtn = canEdit
+            ? '<button class="btn btn-ghost" data-warn="' + escapeHtml(p.id) + '" style="padding:3px 8px; font-size:10.5px;">+ Warn</button>'
+            : '<span style="font-size:11px; color: var(--text-faint);">' + p.warnings + '</span>';
+
+          var passedCheck = '<input type="checkbox" class="grid-check" data-passed-session="' + escapeHtml(p.id) + '" ' + (p.passedSession ? 'checked' : '') + ' ' + (canEdit ? '' : 'disabled') + '>';
+          var exceptionalCheck = '<input type="checkbox" class="grid-check" data-exceptional="' + escapeHtml(p.id) + '" ' + (p.exceptional ? 'checked' : '') + ' ' + (canEdit ? '' : 'disabled') + '>';
+
+          return '<div class="grid-row">' +
+            '<div class="grid-user">' + avatarHtml + '<div><div class="name">' + escapeHtml(p.username) + '</div><span class="role-tag">' + escapeHtml(p.role) + '</span></div></div>' +
+            '<div class="grid-phases">' + phaseChecks + '</div>' +
+            '<div class="grid-divider"></div>' +
+            '<div class="grid-cell" title="Warnings">' + warnBtn + (p.warnings > 0 ? ' <span style="font-size:10.5px;color:var(--warn);">(' + p.warnings + ')</span>' : '') + '</div>' +
+            '<div class="grid-divider"></div>' +
+            '<div class="grid-cell" title="Passed Session">' + passedCheck + ' <span style="font-size:10.5px;color:var(--text-faint);">Passed</span></div>' +
+            '<div class="grid-cell" title="Exceptional">' + exceptionalCheck + ' <span style="font-size:10.5px;color:var(--text-faint);">Exceptional</span></div>' +
           '</div>';
         }).join('');
 
@@ -133,16 +156,23 @@
     }
 
     contentEl.innerHTML =
-      '<div class="panel-card">' +
+      '<div class="panel-card" style="overflow-x:auto;">' +
         '<div class="panel-card-head"><h3>Participants (' + data.participants.length + ')</h3></div>' +
+        (data.participants.length > 0 ? '<div class="grid-row grid-row-head"><div class="grid-user"></div><div class="grid-phases">' + headerCells + '</div><div class="grid-divider"></div><div class="grid-cell">Warn</div><div class="grid-divider"></div><div class="grid-cell">Passed</div><div class="grid-cell">Exceptional</div></div>' : '') +
         rows +
       '</div>' +
       '<div class="session-actions" style="margin-top:4px;">' + actionsHtml + '</div>';
 
-    contentEl.querySelectorAll('[data-phase-status]').forEach(function(radio){
-      radio.addEventListener('change', function(){
-        setPhaseStatus(radio.getAttribute('data-phase-status'), radio.value);
+    contentEl.querySelectorAll('[data-phase-check]').forEach(function(cb){
+      cb.addEventListener('change', function(){
+        setPhaseGrid(cb.getAttribute('data-phase-check'), Number(cb.getAttribute('data-phase-index')), cb.checked ? 'passed' : 'none');
       });
+    });
+    contentEl.querySelectorAll('[data-passed-session]').forEach(function(cb){
+      cb.addEventListener('change', function(){ setPassedSession(cb.getAttribute('data-passed-session'), cb.checked); });
+    });
+    contentEl.querySelectorAll('[data-exceptional]').forEach(function(cb){
+      cb.addEventListener('change', function(){ setExceptional(cb.getAttribute('data-exceptional'), cb.checked); });
     });
     contentEl.querySelectorAll('[data-warn]').forEach(function(btn){
       btn.addEventListener('click', function(){ warnParticipant(btn.getAttribute('data-warn')); });
@@ -173,10 +203,22 @@
           '</div>';
         }).join('');
 
+    var livePlayers = data.livePlayers || [];
+    var alreadyAdded = data.participants.map(function(p){ return p.userId; });
+    var availablePlayers = livePlayers.filter(function(pl){ return alreadyAdded.indexOf(String(pl.userId)) === -1; });
+
+    var dropdownHtml = availablePlayers.length > 0
+      ? '<div class="bio-username-field"><label for="addPartDropdown">Currently in the server</label><select id="addPartDropdown" style="width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); font-family: var(--font-body); font-size:14px;">' +
+          '<option value="">— pick from live server —</option>' +
+          availablePlayers.map(function(pl){ return '<option value="' + escapeHtml(pl.username) + '">' + escapeHtml(pl.username) + '</option>'; }).join('') +
+        '</select></div>'
+      : '<p style="font-size:12.5px; color: var(--text-faint); margin: 0 0 16px;">No live server data yet — type a username manually below.</p>';
+
     var addFormHtml =
       '<div class="panel-card" style="margin-top:16px;">' +
         '<div class="panel-card-head"><h3>Add Participant</h3></div>' +
-        '<div class="bio-username-field"><label for="addPartUsername">Roblox username</label><input type="text" id="addPartUsername" placeholder="username"></div>' +
+        dropdownHtml +
+        '<div class="bio-username-field"><label for="addPartUsername">Or type a Roblox username</label><input type="text" id="addPartUsername" placeholder="username"></div>' +
         '<div class="bio-username-field"><label for="addPartRole">Role</label><select id="addPartRole" style="width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); font-family: var(--font-body); font-size:14px;">' +
           SESSION_ROLES.map(function(r){ return '<option value="' + r + '">' + r + '</option>'; }).join('') +
         '</select></div>' +
@@ -196,6 +238,13 @@
         if (confirm('Remove this participant from the session?')) kickParticipant(btn.getAttribute('data-kick'));
       });
     });
+    var dropdown = document.getElementById('addPartDropdown');
+    var usernameInput = document.getElementById('addPartUsername');
+    if (dropdown && usernameInput){
+      dropdown.addEventListener('change', function(){
+        if (dropdown.value) usernameInput.value = dropdown.value;
+      });
+    }
     var addBtn = document.getElementById('addPartBtn');
     if (addBtn) addBtn.addEventListener('click', addParticipant);
   }
@@ -238,11 +287,11 @@
   // ---------- Promote tab (final phase only) ----------
 
   function renderPromoteTab(contentEl, data){
-    var passed = data.participants.filter(function(p){ return p.phasesPassed >= data.totalPhases; });
+    var passed = data.participants.filter(function(p){ return p.passedSession; });
     var roles = data.groupRoles || [];
 
     var rows = passed.length === 0
-      ? '<p style="font-size:13.5px; color: var(--text-dim);">No one has passed every phase yet.</p>'
+      ? '<p style="font-size:13.5px; color: var(--text-dim);">No one has been checked off as Passed yet (check "Passed" for them on the Main tab).</p>'
       : passed.map(function(p){
           var control = p.promoted
             ? '<span class="badge badge-success">Promoted' + (p.promotedToRank != null ? ' to rank ' + p.promotedToRank : '') + '</span>'
@@ -251,7 +300,7 @@
                 roles.map(function(r){ return '<option value="' + r.rank + '">' + escapeHtml(r.name) + '</option>'; }).join('') +
               '</select> <button class="btn btn-ghost" data-promote-btn="' + escapeHtml(p.id) + '" style="margin-left:8px; padding:4px 10px; font-size:11px;">Promote</button>';
           return '<div class="participant-row">' +
-            '<span class="name">' + escapeHtml(p.username) + '<span class="role-tag">' + escapeHtml(p.role) + '</span></span>' +
+            '<span class="name">' + escapeHtml(p.username) + '<span class="role-tag">' + escapeHtml(p.role) + (p.exceptional ? ' · Exceptional' : '') + '</span></span>' +
             '<span class="spacer"></span>' +
             control +
           '</div>';
@@ -287,14 +336,34 @@
     }
   }
 
-  async function setPhaseStatus(participantId, status){
+  async function setPhaseGrid(participantId, phaseIndex, status){
     try{
-      await fetch(WORKER_URL + '/api/sessions/' + encodeURIComponent(sessionId) + '/participants/' + encodeURIComponent(participantId) + '/phase-status', {
+      await fetch(WORKER_URL + '/api/sessions/' + encodeURIComponent(sessionId) + '/participants/' + encodeURIComponent(participantId) + '/phase-grid', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
-        body: JSON.stringify({ status: status })
+        body: JSON.stringify({ phaseIndex: phaseIndex, status: status })
       });
-    } catch(e){ /* radio still reflects intent; a reload resyncs if it failed */ }
+    } catch(e){ /* checkbox still reflects intent; a reload resyncs if it failed */ }
+  }
+
+  async function setPassedSession(participantId, passed){
+    try{
+      await fetch(WORKER_URL + '/api/sessions/' + encodeURIComponent(sessionId) + '/participants/' + encodeURIComponent(participantId) + '/passed-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+        body: JSON.stringify({ passed: passed })
+      });
+    } catch(e){ /* checkbox still reflects intent */ }
+  }
+
+  async function setExceptional(participantId, exceptional){
+    try{
+      await fetch(WORKER_URL + '/api/sessions/' + encodeURIComponent(sessionId) + '/participants/' + encodeURIComponent(participantId) + '/exceptional', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.sessionToken },
+        body: JSON.stringify({ exceptional: exceptional })
+      });
+    } catch(e){ /* checkbox still reflects intent */ }
   }
 
   async function warnParticipant(participantId){
