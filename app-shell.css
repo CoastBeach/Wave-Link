@@ -226,3 +226,36 @@ body{ overflow-x: hidden; }
   color: var(--text-faint); background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
   padding: 3px 9px; border-radius: 100px; margin-bottom: 14px;
 }
+
+/* ---- Shared: consistent theming for all text inputs and selects
+   rendered dynamically by community.js / session.js / communities.js ---- */
+select, input[type="text"], input[type="email"]{
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease);
+}
+select:hover, input[type="text"]:hover, input[type="email"]:hover{
+  border-color: rgba(255,255,255,0.18) !important;
+}
+select:focus, input[type="text"]:focus, input[type="email"]:focus{
+  outline: none;
+  border-color: rgba(63,214,255,0.4) !important;
+  background: rgba(63,214,255,0.03) !important;
+}
+select:disabled, input:disabled{
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+select{ cursor: pointer; }
+input[type="range"]{ accent-color: var(--accent); cursor: pointer; }
+
+/* ---- Shared: live server player chips (Servers tab) ---- */
+.live-players{
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.live-player-chip{
+  font-family: var(--font-mono); font-size: 11px;
+  padding: 4px 10px; border-radius: 100px;
+  background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft);
+  color: var(--text-dim);
+}
