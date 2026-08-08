@@ -217,6 +217,8 @@
     }
   }
 
+  var serversRefreshTimer = null;
+
   async function loadServers(communityId){
     var loadingEl = document.getElementById('serversLoading');
     var listEl = document.getElementById('serversList');
@@ -235,31 +237,52 @@
         return;
       }
 
-      var servers = data.servers || [];
-      if (servers.length === 0){
-        listEl.innerHTML = emptyTabHtml('No live servers', "No servers have reported in yet. Make sure the Connections script is running in your game.");
-        return;
-      }
+      renderServers(data.servers || []);
 
-      var html = '<div class="groups-list">';
-      servers.forEach(function(s){
-        html +=
-          '<div class="group-card">' +
-            '<div class="group-icon placeholder"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M7 9h10M7 13h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></div>' +
-            '<div class="group-info">' +
-              '<div class="name">Server ' + escapeHtml(s.serverId.slice(0, 8)) + '…</div>' +
-              '<div class="meta"><span>' + s.playerCount + ' player' + (s.playerCount === 1 ? '' : 's') + '</span></div>' +
-            '</div>' +
-            (s.placeId ? '<a href="https://www.roblox.com/games/' + encodeURIComponent(s.placeId) + '" target="_blank" rel="noopener" class="btn btn-ghost">Open Game</a>' : '') +
-          '</div>';
-      });
-      html += '</div><p style="font-size:12.5px; color: var(--text-faint); margin-top:14px;">Joining this exact server from the browser isn\'t reliably possible on Roblox\'s side — once in-game \'joinserver\' commands are set up, players can jump straight to a specific server by its ID.</p>';
-      listEl.innerHTML = html;
+      // Live view: quietly refresh every 15s so player counts/lists stay current
+      if (serversRefreshTimer) clearInterval(serversRefreshTimer);
+      serversRefreshTimer = setInterval(function(){ loadServers(communityId); }, 15000);
     } catch(e){
       loadingEl.hidden = true;
       listEl.hidden = false;
       listEl.innerHTML = '<div class="error-state">Could not reach WaveLink.</div>';
     }
+  }
+
+  function renderServers(servers){
+    var listEl = document.getElementById('serversList');
+    if (!listEl) return;
+
+    if (servers.length === 0){
+      listEl.innerHTML = emptyTabHtml('No live servers', "No servers have reported in yet. Make sure the Connections script is running in your game.");
+      return;
+    }
+
+    var html = '<div class="groups-list">';
+    servers.forEach(function(s, idx){
+      var joinBtn = s.placeId
+        ? '<a href="roblox://experiences/start?placeId=' + encodeURIComponent(s.placeId) + '&gameInstanceId=' + encodeURIComponent(s.serverId) + '" class="btn btn-primary">Join</a>'
+        : '';
+      var players = s.players || [];
+      var playerListHtml = players.length > 0
+        ? '<div class="live-players">' + players.map(function(p){ return '<span class="live-player-chip">' + escapeHtml(p.username) + '</span>'; }).join('') + '</div>'
+        : '<p style="font-size:12px; color: var(--text-faint); margin: 8px 0 0;">No player details reported yet.</p>';
+
+      html +=
+        '<div class="group-card" style="flex-direction:column; align-items:stretch;">' +
+          '<div style="display:flex; align-items:center; gap:14px;">' +
+            '<div class="group-icon placeholder"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M7 9h10M7 13h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></div>' +
+            '<div class="group-info">' +
+              '<div class="name">Server ' + escapeHtml(s.serverId.slice(0, 8)) + '…</div>' +
+              '<div class="meta"><span class="dot-pulse" style="width:6px;height:6px;border-radius:50%;background:var(--success);display:inline-block;margin-right:6px;"></span><span>' + s.playerCount + ' player' + (s.playerCount === 1 ? '' : 's') + ' live</span></div>' +
+            '</div>' +
+            joinBtn +
+          '</div>' +
+          playerListHtml +
+        '</div>';
+    });
+    html += '</div><p style="font-size:12px; color: var(--text-faint); margin-top:14px;">Updates automatically every 15 seconds. "Join" opens Roblox directly to this exact server — your browser will ask permission to open Roblox the first time.</p>';
+    listEl.innerHTML = html;
   }
 
   async function loadConnectionInfo(communityId){
